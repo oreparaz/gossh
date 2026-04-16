@@ -189,7 +189,10 @@ func run() (int, error) {
 		status, err := c.ExecInteractive(strings.Join(remoteArgs, " "))
 		return status, err
 	default:
-		status, err := c.Exec(strings.Join(remoteArgs, " "), os.Stdin, os.Stdout, os.Stderr)
+		// ExecContext forwards ctx cancellation as a "signal TERM"
+		// to the remote so Ctrl-C (which cancels ctx via
+		// NotifyContext above) terminates the remote command.
+		status, err := c.ExecContext(ctx, strings.Join(remoteArgs, " "), os.Stdin, os.Stdout, os.Stderr)
 		return status, err
 	}
 }

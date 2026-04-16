@@ -8,11 +8,9 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/signal"
 	"os/user"
 	"path/filepath"
 	"strconv"
-	"syscall"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -151,16 +149,15 @@ func loadIdentities(paths []string) ([]ssh.Signer, error) {
 
 // Exec runs command non-interactively, copying stdio between the
 // server and the provided streams. Returns the remote exit status.
-//
-// If ctx is canceled, or the host process is sent SIGINT/SIGTERM
-// while Exec is running, the corresponding signal is forwarded to
-// the remote child.
 func (c *Client) Exec(command string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	return c.ExecContext(context.Background(), command, stdin, stdout, stderr)
 }
 
-// ExecContext is like Exec but aborts with the context, forwarding a
-// "signal TERM" to the server on cancel.
+// ExecContext is like Exec but forwards a single "signal TERM" to the
+// remote when ctx is cancelled. Unlike an earlier version, it does
+// NOT call signal.Notify — installing a process-wide signal handler
+// from a library steals signals from the caller. CLI wrappers should
+// install their own handler and cancel ctx.
 func (c *Client) ExecContext(ctx context.Context, command string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	s, err := c.conn.NewSession()
 	if err != nil {
@@ -175,34 +172,22 @@ func (c *Client) ExecContext(ctx context.Context, command string, stdin io.Reade
 		return -1, err
 	}
 
-	// Local signal forwarding: SIGINT/SIGTERM → remote.
-	sigCh := make(chan os.Signal, 2)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	stopSig := make(chan struct{})
+	// Forward cancellation to the remote as a single SIGTERM. The
+	// goroutine exits after delivering once to avoid the earlier
+	// bug where it busy-looped on ctx.Done() (which stays closed).
+	termed := make(chan struct{})
+	done := make(chan struct{})
 	go func() {
-		for {
-			select {
-			case sig := <-sigCh:
-				var name ssh.Signal
-				switch sig {
-				case os.Interrupt:
-					name = ssh.SIGINT
-				case syscall.SIGTERM:
-					name = ssh.SIGTERM
-				default:
-					continue
-				}
-				_ = s.Signal(name)
-			case <-ctx.Done():
-				_ = s.Signal(ssh.SIGTERM)
-			case <-stopSig:
-				return
-			}
+		defer close(done)
+		select {
+		case <-ctx.Done():
+			_ = s.Signal(ssh.SIGTERM)
+		case <-termed:
 		}
 	}()
 	defer func() {
-		signal.Stop(sigCh)
-		close(stopSig)
+		close(termed)
+		<-done
 	}()
 
 	if err := s.Wait(); err != nil {

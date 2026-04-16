@@ -99,45 +99,67 @@ func (v *Verifier) reload() error {
 
 // HostKeyCallback returns an ssh.HostKeyCallback suitable for
 // ssh.ClientConfig.
+//
+// The callback holds v.mu for the duration of a verification attempt.
+// This serialises concurrent TOFU appends for the same host: the first
+// caller writes the entry; the second takes the lock after the file
+// has been refreshed and sees the host as known, so no duplicate line
+// is written.
 func (v *Verifier) HostKeyCallback() ssh.HostKeyCallback {
 	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 		v.mu.Lock()
-		cbk := v.cbk
-		mode := v.mode
-		v.mu.Unlock()
-		err := cbk(hostname, remote, key)
-		if err == nil {
-			return nil
-		}
-		var kerr *xkh.KeyError
-		if !errors.As(err, &kerr) {
-			return err
-		}
-		// Host exists but key mismatch → always reject (possible MITM).
-		if len(kerr.Want) > 0 {
-			return fmt.Errorf("host key mismatch for %s: %w", hostname, err)
-		}
-		// Host unknown.
-		switch mode {
-		case Strict:
-			return fmt.Errorf("host key for %s not in known_hosts (strict mode): %w", hostname, err)
-		case TOFU, AcceptNew:
-			if appendErr := v.Append(hostname, remote, key); appendErr != nil {
-				return fmt.Errorf("TOFU append: %w", appendErr)
-			}
-			return nil
-		case Off:
-			return nil
-		}
-		return err
+		defer v.mu.Unlock()
+		return v.verifyLocked(hostname, remote, key)
 	}
 }
 
+// verifyLocked runs a single host-key verification. Caller must hold v.mu.
+func (v *Verifier) verifyLocked(hostname string, remote net.Addr, key ssh.PublicKey) error {
+	err := v.cbk(hostname, remote, key)
+	if err == nil {
+		return nil
+	}
+	var kerr *xkh.KeyError
+	if !errors.As(err, &kerr) {
+		return err
+	}
+	// Host exists but key mismatch → always reject (possible MITM).
+	if len(kerr.Want) > 0 {
+		return fmt.Errorf("host key mismatch for %s: %w", hostname, err)
+	}
+	// Host unknown.
+	switch v.mode {
+	case Strict:
+		return fmt.Errorf("host key for %s not in known_hosts (strict mode): %w", hostname, err)
+	case TOFU, AcceptNew:
+		if appendErr := v.appendLocked(hostname, remote, key); appendErr != nil {
+			return fmt.Errorf("TOFU append: %w", appendErr)
+		}
+		return nil
+	case Off:
+		return nil
+	}
+	return err
+}
+
 // Append writes a new host/key line to known_hosts and refreshes the
-// in-memory database so subsequent callbacks see it.
+// in-memory database so subsequent callbacks see it. Exported for
+// callers that want to pre-populate the file out-of-band.
 func (v *Verifier) Append(hostname string, remote net.Addr, key ssh.PublicKey) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	return v.appendLocked(hostname, remote, key)
+}
+
+// appendLocked is Append's body. Caller must hold v.mu.
+func (v *Verifier) appendLocked(hostname string, remote net.Addr, key ssh.PublicKey) error {
+	// Re-check under lock: another goroutine may have added this host
+	// between the decision to append and now. Skip the write if so.
+	if v.cbk != nil {
+		if err := v.cbk(hostname, remote, key); err == nil {
+			return nil
+		}
+	}
 	addrs := canonicalAddresses(hostname, remote)
 	line := xkh.Line(addrs, key) + "\n"
 	f, err := os.OpenFile(v.path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)

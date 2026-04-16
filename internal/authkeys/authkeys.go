@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 
 	"golang.org/x/crypto/ssh"
@@ -126,6 +127,35 @@ func ParseFile(path string) ([]Entry, error) {
 	return Parse(f)
 }
 
+// knownOptions are the authorized_keys option keywords we recognise.
+// Parsing rejects anything outside this set so a typo in a restrictive
+// option can never silently disable it.
+var knownOptions = map[string]bool{
+	"restrict":            true,
+	"no-port-forwarding":  true,
+	"no-x11-forwarding":   true,
+	"no-agent-forwarding": true,
+	"no-pty":              true,
+	"no-user-rc":          true,
+	"port-forwarding":     true,
+	"x11-forwarding":      true,
+	"agent-forwarding":    true,
+	"pty":                 true,
+	"user-rc":             true,
+	"command":             true,
+	"from":                true,
+	"permitopen":          true,
+	"permitlisten":        true,
+	"environment":         true,
+	// We do not enforce these, but OpenSSH accepts them; allow them
+	// so real-world authorized_keys files don't get rejected.
+	"cert-authority":  true,
+	"principals":      true,
+	"tunnel":          true,
+	"expiry-time":     true,
+	"verify-required": true,
+}
+
 // parseOptions turns the raw option slice ssh.ParseAuthorizedKey returned
 // into a structured Options value.
 func parseOptions(raw []string) (Options, error) {
@@ -144,6 +174,9 @@ func parseOptions(raw []string) (Options, error) {
 			val = unq
 		}
 		nameL := strings.ToLower(name)
+		if !knownOptions[nameL] {
+			return opts, fmt.Errorf("unknown authorized_keys option %q (typo? remove or quote it)", name)
+		}
 		switch nameL {
 		case "restrict":
 			opts.Restrict = true
@@ -213,9 +246,6 @@ func parseOptions(raw []string) (Options, error) {
 			}
 			opts.Environment[val[:eq]] = val[eq+1:]
 		}
-		// Silently ignore unknown options; OpenSSH rejects them,
-		// but we prefer to keep the config tolerant for non-enforced
-		// keywords. Raw still has the original.
 	}
 	if opts.Restrict {
 		if !enabled["port-forwarding"] {
@@ -295,11 +325,14 @@ func parseHostPort(s string) (HostPort, error) {
 	if portStr == "*" {
 		return HostPort{Host: host, Port: 0}, nil
 	}
-	var port uint16
-	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
+	// strconv.ParseUint rejects trailing garbage; fmt.Sscanf silently
+	// accepts "80abc" as 80, which would cause permitopen policies to
+	// match the wrong port.
+	port, err := strconv.ParseUint(portStr, 10, 16)
+	if err != nil {
 		return HostPort{}, fmt.Errorf("permitopen/permitlisten port %q: %w", portStr, err)
 	}
-	return HostPort{Host: host, Port: port}, nil
+	return HostPort{Host: host, Port: uint16(port)}, nil
 }
 
 // ErrKeyNotFound is returned by Find when no matching entry exists.

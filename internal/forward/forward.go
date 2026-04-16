@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -249,8 +250,14 @@ const (
 	replyCommandUnsup    byte = 0x07
 )
 
+// socksHandshakeTimeout bounds how long a client has to complete the
+// SOCKS5 greeting+request dance. Prevents slow-loris DoS on the SOCKS
+// port. Cleared once the tunnel is established.
+const socksHandshakeTimeout = 10 * time.Second
+
 func handleSOCKS(c net.Conn, client *ssh.Client, log *slog.Logger) {
 	defer c.Close()
+	_ = c.SetReadDeadline(time.Now().Add(socksHandshakeTimeout))
 	// Greeting: VER NMETHODS METHODS...
 	hdr := make([]byte, 2)
 	if _, err := io.ReadFull(c, hdr); err != nil {
@@ -329,6 +336,9 @@ func handleSOCKS(c net.Conn, client *ssh.Client, log *slog.Logger) {
 	}
 	defer rc.Close()
 	writeSOCKSReply(c, replySuccess)
+	// Clear the handshake deadline now that the tunnel is live —
+	// application data may be idle for long stretches.
+	_ = c.SetReadDeadline(time.Time{})
 	splice(c, rc)
 }
 

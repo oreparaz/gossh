@@ -131,6 +131,46 @@ func TestParseFileOK(t *testing.T) {
 	}
 }
 
+func TestParseRejectsUnknownOption(t *testing.T) {
+	// A typo'd option must be rejected — otherwise a misspelled
+	// `command=` silently disables the restriction.
+	lines := []string{
+		`cmmand="whoami" ` + samplePubEd25519,
+		`nopty ` + samplePubEd25519,
+		`permit-open="x:1" ` + samplePubEd25519,
+		`commandx="echo hi" ` + samplePubEd25519,
+	}
+	for _, line := range lines {
+		if _, err := Parse(strings.NewReader(line)); err == nil {
+			t.Fatalf("expected rejection of %q", line)
+		}
+	}
+}
+
+func TestPermitOpenPortRejectsGarbage(t *testing.T) {
+	// permitopen="host:80abc" used to silently yield port=80 with
+	// fmt.Sscanf. Confirm strconv-based parsing refuses it.
+	cases := []string{
+		`permitopen="host:80abc" ` + samplePubEd25519,
+		`permitopen="host:99999" ` + samplePubEd25519, // >uint16
+		`permitopen="host:-1" ` + samplePubEd25519,
+		`permitopen="host:" ` + samplePubEd25519,
+	}
+	for _, line := range cases {
+		if _, err := Parse(strings.NewReader(line)); err == nil {
+			t.Fatalf("expected rejection of %q", line)
+		}
+	}
+}
+
+func TestParseAcceptsKnownButUnenforced(t *testing.T) {
+	// Options OpenSSH accepts that we don't enforce should still parse.
+	line := `cert-authority,principals="alice,bob" ` + samplePubEd25519
+	if _, err := Parse(strings.NewReader(line)); err != nil {
+		t.Fatalf("known unenforced options should parse: %v", err)
+	}
+}
+
 func TestFind(t *testing.T) {
 	entries, err := Parse(strings.NewReader(samplePubEd25519))
 	if err != nil {

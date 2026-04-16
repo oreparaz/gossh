@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -385,11 +386,11 @@ func permitOpenFromExt(p *ssh.Permissions, key string) []authkeys.HostPort {
 		if err != nil {
 			continue
 		}
-		var port uint16
-		if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
+		port, err := strconv.ParseUint(portStr, 10, 16)
+		if err != nil {
 			continue
 		}
-		out = append(out, authkeys.HostPort{Host: host, Port: port})
+		out = append(out, authkeys.HostPort{Host: host, Port: uint16(port)})
 	}
 	return out
 }
@@ -560,7 +561,10 @@ func (st *sessionState) setChildCmd(c *exec.Cmd) {
 }
 
 // deliverSignal resolves an RFC-4254 signal name to a POSIX signal and
-// forwards it to the running child. No-op if no child is running.
+// forwards it to the running child. If the child was started in its
+// own process group (Setsid for PTY sessions, Setpgid for piped
+// sessions), the signal is delivered to the whole group so inner
+// commands run by the shell receive it too.
 func (st *sessionState) deliverSignal(name string) bool {
 	st.cmdMu.Lock()
 	c := st.cmd
@@ -571,6 +575,12 @@ func (st *sessionState) deliverSignal(name string) bool {
 	sig, ok := posixSignal(name)
 	if !ok {
 		return false
+	}
+	if c.SysProcAttr != nil && (c.SysProcAttr.Setsid || c.SysProcAttr.Setpgid) {
+		// kill(-pid, sig) targets the process group whose leader is pid.
+		if err := syscall.Kill(-c.Process.Pid, sig); err == nil {
+			return true
+		}
 	}
 	_ = c.Process.Signal(sig)
 	return true
@@ -707,6 +717,11 @@ func (st *sessionState) runPipe(shell string, args []string) {
 	}
 	cmd := exec.CommandContext(st.ctx, shell, args...)
 	cmd.Env = st.finalEnv(false)
+	// Give the child its own process group so a signal delivered by
+	// the SSH "signal" request can reach the shell's subprocesses
+	// (kill(-pgid, sig)). Setpgid (not Setsid) is enough here —
+	// no PTY is attached so we don't want a new session.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		fmt.Fprintf(st.ch.Stderr(), "gossh: stdin pipe: %v\n", err)

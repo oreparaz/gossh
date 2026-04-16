@@ -13,6 +13,74 @@ import (
 	"github.com/oscar/gossh/internal/knownhosts"
 )
 
+// TestSignalForwardingKillsProcessGroup runs a shell that traps
+// SIGTERM (and stays alive) and starts sleep as a child. We send
+// SIGKILL via the ssh channel; if signaling only hit the shell,
+// KILL would kill bash but the `sleep` child would live. If the
+// server delivers to the whole process group, both die.
+func TestSignalForwardingKillsProcessGroup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	h := startServer(t, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	c, err := client.Dial(ctx, client.Config{
+		Host:           h.Host,
+		Port:           atoi(h.Port),
+		User:           "testuser",
+		IdentityFiles:  []string{h.UserKeyPath},
+		KnownHostsPath: h.KnownHosts,
+		HostCheckMode:  knownhosts.Strict,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	s, err := c.Raw().NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// Bash traps INT and continues sleeping. A plain
+	// c.Process.Signal(INT) only hits bash; bash swallows it and
+	// sleep keeps running, so the wait below times out. With
+	// process-group signaling kill(-pgid, INT), the sleep child
+	// also gets INT and dies, which makes bash's `sleep` call
+	// return. The remote command then completes.
+	stdout, _ := s.StdoutPipe()
+	go func() { _, _ = io.Copy(io.Discard, stdout) }()
+	// Bash installs an INT handler (not SIG_IGN, because SIG_IGN
+	// would be inherited by the child). The handler runs when bash
+	// itself receives INT but the sleep child keeps the default
+	// disposition (terminate on INT).
+	//
+	// If we signal only bash (the old buggy path), bash's handler
+	// runs and bash returns to waiting on `sleep`, which keeps
+	// running for the full 30s. The Wait below would time out.
+	//
+	// With process-group signaling, sleep also receives INT and
+	// dies; bash's wait returns and the whole command finishes.
+	if err := s.Start(`trap 'printf trap' INT; sleep 30; echo done`); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if err := s.Signal(ssh.SIGINT); err != nil {
+		t.Fatalf("signal: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- s.Wait() }()
+	select {
+	case <-done:
+		// Killed — either bash pgroup or sleep child exit triggers closure.
+	case <-time.After(5 * time.Second):
+		t.Fatal("shell with trapped TERM and sleep did not exit after pgroup SIGKILL")
+	}
+}
+
 // TestSignalForwarding kicks off a long sleep through gossh's client
 // package, then sends SIGTERM via ssh's "signal" request. The server
 // must deliver the signal and the remote shell must exit.
