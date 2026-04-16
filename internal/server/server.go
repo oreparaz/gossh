@@ -76,6 +76,12 @@ type Config struct {
 	// remote IP. Zero means unlimited.
 	MaxConnectionsPerIP int
 
+	// ShutdownGrace is the time existing sessions are given to drain
+	// after the outer context is cancelled. Zero means "no grace" —
+	// cancel immediately propagates to child processes (SIGKILL).
+	// A typical value is 10–30s.
+	ShutdownGrace time.Duration
+
 	// Logger receives structured log events. If nil, a discard
 	// handler is used.
 	Logger *slog.Logger
@@ -138,15 +144,43 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 
 // Serve accepts connections from the given listener. It returns when
 // ctx is cancelled or the listener is closed.
+//
+// When ctx is cancelled: the listener is closed immediately (no new
+// connections). If ShutdownGrace > 0, existing sessions get that long
+// to finish on their own; after the grace period, the inner context
+// driving each session is cancelled, which propagates SIGKILL to
+// child processes.
 func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 	s.log.Info("listening", "addr", l.Addr().String())
 	var wg sync.WaitGroup
+
+	// The handler context is used for per-connection state and child
+	// processes. We cancel it on shutdown after the grace period; this
+	// lets existing SSH sessions drain before we nuke them.
+	handleCtx, cancelHandle := context.WithCancel(context.Background())
+	defer cancelHandle()
+
 	// Close the listener when ctx ends so Accept returns.
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	shutdownOnce := sync.Once{}
 	go func() {
 		<-ctx.Done()
 		_ = l.Close()
+		shutdownOnce.Do(func() {
+			if s.cfg.ShutdownGrace <= 0 {
+				cancelHandle()
+				return
+			}
+			// Grace: cancel only if handlers haven't all finished.
+			done := make(chan struct{})
+			go func() { wg.Wait(); close(done) }()
+			select {
+			case <-done:
+				cancelHandle()
+			case <-time.After(s.cfg.ShutdownGrace):
+				s.log.Warn("shutdown grace expired; killing active sessions")
+				cancelHandle()
+			}
+		})
 	}()
 
 	for {
@@ -156,7 +190,6 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 				wg.Wait()
 				return nil
 			}
-			// Temporary accept errors: log and continue.
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
 				continue
 			}
@@ -166,7 +199,7 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.handle(ctx, conn)
+			s.handle(handleCtx, conn)
 		}()
 	}
 }
