@@ -23,6 +23,7 @@ import (
 	"github.com/oscar/gossh/internal/client"
 	"github.com/oscar/gossh/internal/forward"
 	"github.com/oscar/gossh/internal/knownhosts"
+	"github.com/oscar/gossh/internal/sshconfig"
 )
 
 func main() {
@@ -54,6 +55,7 @@ func run() (int, error) {
 		noCommand     = flag.Bool("N", false, "do not execute a remote command (useful for forwarding)")
 		strict        = flag.String("strict-host-key", "accept-new", "ask (strict reject), yes (strict), accept-new (TOFU), no (off)")
 		knownHostsArg = flag.String("known-hosts", "", "override known_hosts path")
+		configPath    = flag.String("F", "", "path to ssh_config (values override defaults, CLI overrides file)")
 	)
 	flag.Var(&identities, "i", "path to identity file (repeatable)")
 	flag.Var(&locals, "L", "local forward: [bind:]port:host:hostport (repeatable)")
@@ -69,11 +71,45 @@ func run() (int, error) {
 	if err != nil {
 		return 2, err
 	}
+
+	// Apply ssh_config values before CLI overrides.
+	var cfgHost sshconfig.ClientHost
+	if *configPath != "" {
+		cc, err := sshconfig.ParseClientFile(*configPath)
+		if err != nil {
+			return 2, fmt.Errorf("ssh_config: %w", err)
+		}
+		cfgHost = cc.ResolveHost(host)
+	}
+
+	// Host alias resolution: ssh_config "Host alias"/"Hostname realhost".
+	if cfgHost.Hostname != "" && cfgHost.Hostname != host {
+		host = cfgHost.Hostname
+	}
+	if cfgHost.Port != 0 && *port == 22 {
+		remotePort = cfgHost.Port
+	}
+	if user == "" && cfgHost.User != "" {
+		user = cfgHost.User
+	}
 	if *login != "" {
 		user = *login
 	}
+	// Identity files: CLI wins; otherwise use file entries.
+	if len(identities) == 0 && len(cfgHost.IdentityFiles) > 0 {
+		identities = append(multiFlag(nil), cfgHost.IdentityFiles...)
+	}
+	// Strict host key checking: CLI explicit wins over file.
+	strictVal := *strict
+	if cfgHost.StrictHost != "" && !explicitStrict(strict) {
+		strictVal = cfgHost.StrictHost
+	}
+	knownHostsVal := *knownHostsArg
+	if knownHostsVal == "" && cfgHost.KnownHosts != "" {
+		knownHostsVal = cfgHost.KnownHosts
+	}
 
-	mode, err := parseStrict(*strict)
+	mode, err := parseStrict(strictVal)
 	if err != nil {
 		return 2, err
 	}
@@ -83,7 +119,7 @@ func run() (int, error) {
 		Port:           remotePort,
 		User:           user,
 		IdentityFiles:  identities,
-		KnownHostsPath: *knownHostsArg,
+		KnownHostsPath: knownHostsVal,
 		HostCheckMode:  mode,
 	}
 
@@ -196,6 +232,18 @@ func parseTarget(s string, defPort int) (user, host string, port int, err error)
 		host = s
 	}
 	return user, host, port, nil
+}
+
+// explicitStrict reports whether the user set -strict-host-key on the
+// command line (vs. leaving the default in place).
+func explicitStrict(p *string) bool {
+	seen := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "strict-host-key" {
+			seen = true
+		}
+	})
+	return seen
 }
 
 func parseStrict(v string) (knownhosts.Mode, error) {

@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/oscar/gossh/internal/authkeys"
 	"github.com/oscar/gossh/internal/hostkey"
 	"github.com/oscar/gossh/internal/server"
+	"github.com/oscar/gossh/internal/sshconfig"
 )
 
 func main() {
@@ -48,10 +50,37 @@ func run() error {
 		loginGrace   = flag.Duration("login-grace", 120*time.Second, "max time to complete authentication")
 		maxAuth      = flag.Int("max-auth-tries", 6, "max public-key offers before disconnect")
 		maxPerIP     = flag.Int("max-per-ip", 10, "concurrent connections per remote IP (0 = unlimited)")
+		configPath   = flag.String("f", "", "path to sshd_config (CLI flags override file values)")
 		verbose      = flag.Bool("v", false, "verbose logging")
 	)
 	flag.Var(&hostKeyPaths, "host-key", "path to host key file (repeatable); ed25519 is generated if missing")
 	flag.Parse()
+
+	// Apply sshd_config values as defaults before CLI overrides.
+	if *configPath != "" {
+		sc, err := sshconfig.ParseServerFile(*configPath)
+		if err != nil {
+			return fmt.Errorf("sshd_config: %w", err)
+		}
+		if *authKeysPath == "" && sc.AuthorizedKeysFile != "" {
+			*authKeysPath = sc.AuthorizedKeysFile
+		}
+		if len(hostKeyPaths) == 0 && len(sc.HostKeys) > 0 {
+			hostKeyPaths = append(hostKeyPaths, sc.HostKeys...)
+		}
+		if sc.MaxAuthTries != 0 && !flagSet("max-auth-tries") {
+			*maxAuth = sc.MaxAuthTries
+		}
+		if sc.Port != 0 && !flagSet("listen") {
+			// Rewrite listen to use configured port if we're on the default.
+			if strings.HasSuffix(*listen, ":2222") {
+				*listen = strings.TrimSuffix(*listen, ":2222") + fmt.Sprintf(":%d", sc.Port)
+			}
+		}
+		if sc.PasswordAuthentication {
+			return errors.New("sshd_config: PasswordAuthentication yes is not supported; remove it to proceed")
+		}
+	}
 
 	if *authKeysPath == "" {
 		return errors.New("-authorized-keys is required")
@@ -112,3 +141,13 @@ type multiFlag []string
 
 func (m *multiFlag) String() string     { return fmt.Sprintf("%v", []string(*m)) }
 func (m *multiFlag) Set(s string) error { *m = append(*m, s); return nil }
+
+func flagSet(name string) bool {
+	seen := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			seen = true
+		}
+	})
+	return seen
+}
