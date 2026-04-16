@@ -8,9 +8,11 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/signal"
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -149,7 +151,17 @@ func loadIdentities(paths []string) ([]ssh.Signer, error) {
 
 // Exec runs command non-interactively, copying stdio between the
 // server and the provided streams. Returns the remote exit status.
+//
+// If ctx is canceled, or the host process is sent SIGINT/SIGTERM
+// while Exec is running, the corresponding signal is forwarded to
+// the remote child.
 func (c *Client) Exec(command string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	return c.ExecContext(context.Background(), command, stdin, stdout, stderr)
+}
+
+// ExecContext is like Exec but aborts with the context, forwarding a
+// "signal TERM" to the server on cancel.
+func (c *Client) ExecContext(ctx context.Context, command string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	s, err := c.conn.NewSession()
 	if err != nil {
 		return -1, err
@@ -158,7 +170,42 @@ func (c *Client) Exec(command string, stdin io.Reader, stdout, stderr io.Writer)
 	s.Stdin = stdin
 	s.Stdout = stdout
 	s.Stderr = stderr
-	if err := s.Run(command); err != nil {
+
+	if err := s.Start(command); err != nil {
+		return -1, err
+	}
+
+	// Local signal forwarding: SIGINT/SIGTERM → remote.
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	stopSig := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case sig := <-sigCh:
+				var name ssh.Signal
+				switch sig {
+				case os.Interrupt:
+					name = ssh.SIGINT
+				case syscall.SIGTERM:
+					name = ssh.SIGTERM
+				default:
+					continue
+				}
+				_ = s.Signal(name)
+			case <-ctx.Done():
+				_ = s.Signal(ssh.SIGTERM)
+			case <-stopSig:
+				return
+			}
+		}
+	}()
+	defer func() {
+		signal.Stop(sigCh)
+		close(stopSig)
+	}()
+
+	if err := s.Wait(); err != nil {
 		var exitErr *ssh.ExitError
 		if errors.As(err, &exitErr) {
 			return exitErr.ExitStatus(), nil
