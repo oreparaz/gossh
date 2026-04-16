@@ -36,6 +36,8 @@ func (st *sessionState) runPTY(command string, wantShell bool) {
 		_ = st.ch.Close()
 		return
 	}
+	st.setChildCmd(cmd)
+	defer st.setChildCmd(nil)
 
 	// Resize watcher.
 	go func() {

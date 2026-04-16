@@ -473,6 +473,66 @@ type sessionState struct {
 	doneReqs  bool // set to true when we want to stop reading requests
 	resize    chan winSize
 	done      chan struct{}
+
+	cmdMu sync.Mutex
+	cmd   *exec.Cmd
+}
+
+// setChildCmd stores the running child so "signal" requests can
+// deliver POSIX signals while the session is live. cleared via nil.
+func (st *sessionState) setChildCmd(c *exec.Cmd) {
+	st.cmdMu.Lock()
+	st.cmd = c
+	st.cmdMu.Unlock()
+}
+
+// deliverSignal resolves an RFC-4254 signal name to a POSIX signal and
+// forwards it to the running child. No-op if no child is running.
+func (st *sessionState) deliverSignal(name string) bool {
+	st.cmdMu.Lock()
+	c := st.cmd
+	st.cmdMu.Unlock()
+	if c == nil || c.Process == nil {
+		return false
+	}
+	sig, ok := posixSignal(name)
+	if !ok {
+		return false
+	}
+	_ = c.Process.Signal(sig)
+	return true
+}
+
+func posixSignal(name string) (syscall.Signal, bool) {
+	switch name {
+	case "ABRT":
+		return syscall.SIGABRT, true
+	case "ALRM":
+		return syscall.SIGALRM, true
+	case "FPE":
+		return syscall.SIGFPE, true
+	case "HUP":
+		return syscall.SIGHUP, true
+	case "ILL":
+		return syscall.SIGILL, true
+	case "INT":
+		return syscall.SIGINT, true
+	case "KILL":
+		return syscall.SIGKILL, true
+	case "PIPE":
+		return syscall.SIGPIPE, true
+	case "QUIT":
+		return syscall.SIGQUIT, true
+	case "SEGV":
+		return syscall.SIGSEGV, true
+	case "TERM":
+		return syscall.SIGTERM, true
+	case "USR1":
+		return syscall.SIGUSR1, true
+	case "USR2":
+		return syscall.SIGUSR2, true
+	}
+	return 0, false
 }
 
 type winSize struct{ Rows, Cols, Width, Height uint32 }
@@ -532,9 +592,10 @@ func (st *sessionState) handleRequest(req *ssh.Request) {
 			}
 		}
 	case "signal":
-		// Best-effort: ignored for now. Forwarding POSIX signals to
-		// the child via pty is the usual route; not wired up yet.
-		ok = true
+		name, perr := parseStringRequest(req.Payload)
+		if perr == nil && st.deliverSignal(name) {
+			ok = true
+		}
 	}
 	if req.WantReply {
 		_ = req.Reply(ok, nil)
@@ -589,6 +650,8 @@ func (st *sessionState) runPipe(shell string, args []string) {
 		_ = st.ch.Close()
 		return
 	}
+	st.setChildCmd(cmd)
+	defer st.setChildCmd(nil)
 	go func() {
 		_, _ = io.Copy(stdin, st.ch)
 		_ = stdin.Close()
