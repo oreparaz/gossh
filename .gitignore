@@ -1,0 +1,8 @@
+/bin/
+/dist/
+/testdata/tmp/
+/coverage.out
+/coverage.html
+/*.log
+/.env
+/.claude/
