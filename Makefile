@@ -3,11 +3,11 @@ PKG := github.com/oscar/gossh
 BIN_DIR := bin
 LDFLAGS := -s -w
 
-.PHONY: all build build-server build-client test test-short test-interop fmt vet lint clean tidy
+.PHONY: all build build-server build-client build-keygen test test-short test-interop fmt vet lint clean tidy
 
 all: build test
 
-build: build-server build-client
+build: build-server build-client build-keygen
 
 build-server:
 	@mkdir -p $(BIN_DIR)
@@ -16,6 +16,10 @@ build-server:
 build-client:
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/gossh ./cmd/gossh
+
+build-keygen:
+	@mkdir -p $(BIN_DIR)
+	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/gossh-keygen ./cmd/gossh-keygen
 
 test:
 	$(GO) test -race -timeout 120s ./...
