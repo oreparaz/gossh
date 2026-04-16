@@ -44,23 +44,24 @@ func (st *sessionState) runPTY(command string, wantShell bool) {
 		}
 	}()
 
-	// channel <- pty (output)
-	copyDone := make(chan struct{})
+	// channel <- pty (output). Closing ses.Master (after Wait
+	// returns) makes this io.Copy return.
+	outputDone := make(chan struct{})
 	go func() {
-		defer close(copyDone)
+		defer close(outputDone)
 		_, _ = io.Copy(st.ch, ses.Master)
 	}()
-	// channel -> pty (input). When the client closes the channel,
-	// this copy returns; we then close the pty master so the shell
-	// sees EOF on stdin. We also send SIGHUP if that doesn't kick it.
+	// channel -> pty (input). Do NOT close ses.Master from this
+	// goroutine: the child may still be writing to the pty slave,
+	// and closing master from under it makes the slave side fail
+	// with EIO, causing the command to exit non-zero.
 	go func() {
 		_, _ = io.Copy(ses.Master, st.ch)
-		_ = ses.Master.Close()
 	}()
 
 	waitErr := cmd.Wait()
-	<-copyDone
-	_ = ses.Close()
+	_ = ses.Close() // master close → outputDone unblocks → send exit
+	<-outputDone
 	_ = st.ch.CloseWrite()
 	_ = sendExitStatus(st.ch, exitStatus(waitErr))
 	_ = st.ch.Close()

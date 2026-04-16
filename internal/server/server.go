@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -202,11 +203,11 @@ func (s *Server) handle(ctx context.Context, nc net.Conn) {
 		case "session":
 			go s.handleSession(ctx, conn, newCh, log)
 		case "direct-tcpip":
-			if !s.cfg.AllowLocalForward {
+			if !s.cfg.AllowLocalForward || hasExt(conn, "no-port-forwarding") {
 				_ = newCh.Reject(ssh.Prohibited, "direct-tcpip not permitted")
 				continue
 			}
-			go s.handleDirectTCPIP(ctx, newCh, log)
+			go s.handleDirectTCPIP(ctx, conn, newCh, log)
 		default:
 			_ = newCh.Reject(ssh.UnknownChannelType, "unknown channel type")
 		}
@@ -263,6 +264,62 @@ func encodePermBools(p *ssh.Permissions, o authkeys.Options) {
 	setIf("no-pty", o.NoPTY)
 	setIf("no-agent-forwarding", o.NoAgentForwarding)
 	setIf("no-user-rc", o.NoUserRC)
+	if len(o.PermitOpen) > 0 {
+		parts := make([]string, 0, len(o.PermitOpen))
+		for _, hp := range o.PermitOpen {
+			parts = append(parts, fmt.Sprintf("%s:%d", hp.Host, hp.Port))
+		}
+		p.Extensions["permitopen"] = strings.Join(parts, ",")
+	}
+	if len(o.PermitListen) > 0 {
+		parts := make([]string, 0, len(o.PermitListen))
+		for _, hp := range o.PermitListen {
+			parts = append(parts, fmt.Sprintf("%s:%d", hp.Host, hp.Port))
+		}
+		p.Extensions["permitlisten"] = strings.Join(parts, ",")
+	}
+}
+
+// permitOpenFromExt parses the permitopen extension into a slice of
+// HostPorts. Empty slice means "no permitopen option in authorized_keys",
+// which the caller interprets as "any target allowed".
+func permitOpenFromExt(p *ssh.Permissions, key string) []authkeys.HostPort {
+	if p == nil || p.Extensions[key] == "" {
+		return nil
+	}
+	raw := strings.Split(p.Extensions[key], ",")
+	out := make([]authkeys.HostPort, 0, len(raw))
+	for _, r := range raw {
+		host, portStr, err := net.SplitHostPort(r)
+		if err != nil {
+			continue
+		}
+		var port uint16
+		if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
+			continue
+		}
+		out = append(out, authkeys.HostPort{Host: host, Port: port})
+	}
+	return out
+}
+
+// permitOpenAllows reports whether target (host:port) is allowed by
+// the permitopen list. An empty list from authorized_keys means the
+// key did not restrict forwarding.
+func permitOpenAllows(list []authkeys.HostPort, host string, port uint32) bool {
+	if len(list) == 0 {
+		return true
+	}
+	for _, hp := range list {
+		if hp.Host != "*" && hp.Host != host {
+			continue
+		}
+		if hp.Port != 0 && uint32(hp.Port) != port {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // handleGlobalRequests handles requests like tcpip-forward (remote
@@ -294,9 +351,63 @@ func (s *Server) handleRemoteForward(_ context.Context, _ *ssh.ServerConn, req *
 	_ = req.Reply(false, nil) // TODO(task 9)
 }
 
-// handleDirectTCPIP is implemented in a later commit (task 8).
-func (s *Server) handleDirectTCPIP(_ context.Context, newCh ssh.NewChannel, _ *slog.Logger) {
-	_ = newCh.Reject(ssh.Prohibited, "direct-tcpip not yet implemented") // TODO(task 8)
+// handleDirectTCPIP opens a TCP connection to the target in the
+// channel-open payload and splices data in both directions. This is
+// what powers client-side "-L local_port:target_host:target_port".
+func (s *Server) handleDirectTCPIP(ctx context.Context, conn *ssh.ServerConn, newCh ssh.NewChannel, log *slog.Logger) {
+	var req struct {
+		DestAddr string
+		DestPort uint32
+		OrigAddr string
+		OrigPort uint32
+	}
+	if err := ssh.Unmarshal(newCh.ExtraData(), &req); err != nil {
+		_ = newCh.Reject(ssh.ConnectionFailed, "bad direct-tcpip payload")
+		return
+	}
+	if !permitOpenAllows(permitOpenFromExt(conn.Permissions, "permitopen"), req.DestAddr, req.DestPort) {
+		log.Warn("direct-tcpip rejected by permitopen", "dest", req.DestAddr, "port", req.DestPort)
+		_ = newCh.Reject(ssh.Prohibited, "target not in permitopen")
+		return
+	}
+	target := net.JoinHostPort(req.DestAddr, fmt.Sprintf("%d", req.DestPort))
+	d := net.Dialer{Timeout: 10 * time.Second}
+	tcpConn, err := d.DialContext(ctx, "tcp", target)
+	if err != nil {
+		log.Info("direct-tcpip dial failed", "target", target, "err", err)
+		_ = newCh.Reject(ssh.ConnectionFailed, "dial: "+err.Error())
+		return
+	}
+	ch, reqs, err := newCh.Accept()
+	if err != nil {
+		_ = tcpConn.Close()
+		return
+	}
+	go ssh.DiscardRequests(reqs)
+	spliceChannel(ch, tcpConn)
+	log.Info("direct-tcpip closed", "target", target)
+}
+
+// spliceChannel copies bytes in both directions between an SSH channel
+// and a net.Conn, closing both when either side finishes.
+func spliceChannel(ch ssh.Channel, conn net.Conn) {
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(ch, conn)
+		_ = ch.CloseWrite()
+	}()
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(conn, ch)
+		if cw, ok := conn.(interface{ CloseWrite() error }); ok {
+			_ = cw.CloseWrite()
+		}
+	}()
+	wg.Wait()
+	_ = ch.Close()
+	_ = conn.Close()
 }
 
 // handleSession drives a single session channel. It collects env and
