@@ -47,6 +47,7 @@ func run() error {
 		allowRF      = flag.Bool("allow-remote-forward", false, "accept tcpip-forward requests (-R)")
 		loginGrace   = flag.Duration("login-grace", 120*time.Second, "max time to complete authentication")
 		maxAuth      = flag.Int("max-auth-tries", 6, "max public-key offers before disconnect")
+		maxPerIP     = flag.Int("max-per-ip", 10, "concurrent connections per remote IP (0 = unlimited)")
 		verbose      = flag.Bool("v", false, "verbose logging")
 	)
 	flag.Var(&hostKeyPaths, "host-key", "path to host key file (repeatable); ed25519 is generated if missing")
@@ -82,17 +83,18 @@ func run() error {
 	}
 
 	cfg := server.Config{
-		ListenAddr:         *listen,
-		HostKeys:           signers,
-		AuthorizedKeys:     server.StaticAuthorizedKeys(entries),
-		Shell:              *shell,
-		AllowExec:          *allowExec,
-		AllowPTY:           *allowPTY,
-		AllowLocalForward:  *allowLF,
-		AllowRemoteForward: *allowRF,
-		LoginGraceTime:     *loginGrace,
-		MaxAuthTries:       *maxAuth,
-		Logger:             log,
+		ListenAddr:          *listen,
+		HostKeys:            signers,
+		AuthorizedKeys:      server.StaticAuthorizedKeys(entries),
+		Shell:               *shell,
+		AllowExec:           *allowExec,
+		AllowPTY:            *allowPTY,
+		AllowLocalForward:   *allowLF,
+		AllowRemoteForward:  *allowRF,
+		LoginGraceTime:      *loginGrace,
+		MaxAuthTries:        *maxAuth,
+		MaxConnectionsPerIP: *maxPerIP,
+		Logger:              log,
 	}
 
 	s, err := server.New(cfg)

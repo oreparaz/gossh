@@ -72,6 +72,10 @@ type Config struct {
 	// server and forward connections back.
 	AllowRemoteForward bool
 
+	// MaxConnectionsPerIP caps concurrent connections from a single
+	// remote IP. Zero means unlimited.
+	MaxConnectionsPerIP int
+
 	// Logger receives structured log events. If nil, a discard
 	// handler is used.
 	Logger *slog.Logger
@@ -91,8 +95,9 @@ func StaticAuthorizedKeys(entries []authkeys.Entry) AuthorizedKeysFunc {
 
 // Server is an instance of gosshd.
 type Server struct {
-	cfg Config
-	log *slog.Logger
+	cfg     Config
+	log     *slog.Logger
+	limiter *ipLimiter
 }
 
 // New validates the config and returns a Server.
@@ -116,7 +121,7 @@ func New(cfg Config) (*Server, error) {
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	return &Server{cfg: cfg, log: log}, nil
+	return &Server{cfg: cfg, log: log, limiter: newIPLimiter(cfg.MaxConnectionsPerIP)}, nil
 }
 
 // ListenAndServe binds cfg.ListenAddr and serves until ctx is cancelled.
@@ -170,6 +175,15 @@ func (s *Server) handle(ctx context.Context, nc net.Conn) {
 	defer nc.Close()
 	remoteStr := nc.RemoteAddr().String()
 	log := s.log.With("remote", remoteStr)
+
+	// Per-IP concurrency cap. We reject *after* accept (cannot stop
+	// the connect itself), but drop fast.
+	release, ok := s.limiter.acquire(nc.RemoteAddr())
+	if !ok {
+		log.Warn("per-IP connection cap reached; rejecting")
+		return
+	}
+	defer release()
 
 	// Enforce a handshake deadline; reset after handshake completes.
 	_ = nc.SetDeadline(time.Now().Add(s.cfg.LoginGraceTime))
