@@ -109,6 +109,71 @@ func TestDirectTCPIPWithSystemSSH(t *testing.T) {
 	}
 }
 
+func TestRemoteForwardWithSystemSSH(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	// Start a destination server that our -R will forward into.
+	destAddr, stopDest := startEchoServer(t)
+	defer stopDest()
+
+	h := startServer(t, func(c *server.Config) {
+		c.AllowRemoteForward = true
+	})
+
+	// Choose a free port for the bind-on-server side.
+	bindPort := pickFreePort(t)
+
+	// ssh -N -R bindPort:destAddr host
+	cmd := h.sshCmd(t, []string{
+		"-N",
+		"-R", fmt.Sprintf("%d:%s", bindPort, destAddr),
+	})
+	var sshErr strings.Builder
+	cmd.Stderr = &sshErr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+		if t.Failed() {
+			t.Logf("ssh stderr: %s", sshErr.String())
+		}
+	}()
+
+	// Wait for the server-side listener to come up.
+	var conn net.Conn
+	deadline := time.Now().Add(3 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		conn, lastErr = net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", bindPort))
+		if lastErr == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if lastErr != nil {
+		t.Fatalf("server-side -R listener never came up: %v", lastErr)
+	}
+	defer conn.Close()
+
+	msg := "remote-forward-round-trip\n"
+	if _, err := conn.Write([]byte(msg)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, len(msg))
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		t.Fatal(err)
+	}
+	if string(buf) != msg {
+		t.Fatalf("got %q", string(buf))
+	}
+}
+
 func TestDirectTCPIPRejectedWhenDisallowed(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration")

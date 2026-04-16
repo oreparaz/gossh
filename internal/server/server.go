@@ -188,8 +188,12 @@ func (s *Server) handle(ctx context.Context, nc net.Conn) {
 	log = log.With("user", conn.User(), "client", string(conn.ClientVersion()))
 	log.Info("connected")
 
+	// Per-connection -R forwards registry. Closed when handle returns.
+	fwd := newRemoteForwards()
+	defer fwd.closeAll()
+
 	// Spin off global-request handler.
-	go s.handleGlobalRequests(ctx, conn, reqs, log)
+	go s.handleGlobalRequests(ctx, conn, fwd, reqs, log)
 
 	// Dispatch channels.
 	for newCh := range chans {
@@ -322,10 +326,8 @@ func permitOpenAllows(list []authkeys.HostPort, host string, port uint32) bool {
 	return false
 }
 
-// handleGlobalRequests handles requests like tcpip-forward (remote
-// port forwarding). For now, we reject all of them unless explicitly
-// implemented downstream.
-func (s *Server) handleGlobalRequests(ctx context.Context, conn *ssh.ServerConn, reqs <-chan *ssh.Request, log *slog.Logger) {
+// handleGlobalRequests dispatches per-connection global requests.
+func (s *Server) handleGlobalRequests(ctx context.Context, conn *ssh.ServerConn, fwd *remoteForwards, reqs <-chan *ssh.Request, log *slog.Logger) {
 	for req := range reqs {
 		switch req.Type {
 		case "tcpip-forward", "cancel-tcpip-forward":
@@ -333,7 +335,7 @@ func (s *Server) handleGlobalRequests(ctx context.Context, conn *ssh.ServerConn,
 				_ = req.Reply(false, nil)
 				continue
 			}
-			s.handleRemoteForward(ctx, conn, req, log)
+			s.doRemoteForward(ctx, conn, fwd, req, log)
 		case "keepalive@openssh.com":
 			_ = req.Reply(true, nil)
 		default:
@@ -342,13 +344,6 @@ func (s *Server) handleGlobalRequests(ctx context.Context, conn *ssh.ServerConn,
 			}
 		}
 	}
-}
-
-// ---- handlers below are deliberately stubs; filled in by subsequent commits. ----
-
-// handleRemoteForward is implemented in a later commit (task 9).
-func (s *Server) handleRemoteForward(_ context.Context, _ *ssh.ServerConn, req *ssh.Request, _ *slog.Logger) {
-	_ = req.Reply(false, nil) // TODO(task 9)
 }
 
 // handleDirectTCPIP opens a TCP connection to the target in the
