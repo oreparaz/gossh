@@ -51,6 +51,8 @@ func run() error {
 		maxAuth      = flag.Int("max-auth-tries", 6, "max public-key offers before disconnect")
 		maxPerIP     = flag.Int("max-per-ip", 10, "concurrent connections per remote IP (0 = unlimited)")
 		shutdownGr   = flag.Duration("shutdown-grace", 10*time.Second, "on SIGTERM, wait this long for sessions to drain before killing them")
+		kaInterval   = flag.Duration("client-alive-interval", 0, "send keepalive every N if idle (0 disables)")
+		kaCount      = flag.Int("client-alive-count-max", 3, "disconnect after this many consecutive keepalive failures")
 		configPath   = flag.String("f", "", "path to sshd_config (CLI flags override file values)")
 		verbose      = flag.Bool("v", false, "verbose logging")
 	)
@@ -125,6 +127,8 @@ func run() error {
 		MaxAuthTries:        *maxAuth,
 		MaxConnectionsPerIP: *maxPerIP,
 		ShutdownGrace:       *shutdownGr,
+		ClientAliveInterval: *kaInterval,
+		ClientAliveCountMax: *kaCount,
 		Logger:              log,
 	}
 

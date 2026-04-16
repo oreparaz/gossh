@@ -82,6 +82,13 @@ type Config struct {
 	// A typical value is 10–30s.
 	ShutdownGrace time.Duration
 
+	// ClientAliveInterval, if > 0, makes the server send a
+	// keepalive request on each idle connection every interval.
+	// After ClientAliveCountMax consecutive failures the connection
+	// is dropped.
+	ClientAliveInterval time.Duration
+	ClientAliveCountMax int
+
 	// Logger receives structured log events. If nil, a discard
 	// handler is used.
 	Logger *slog.Logger
@@ -241,6 +248,39 @@ func (s *Server) handle(ctx context.Context, nc net.Conn) {
 
 	// Spin off global-request handler.
 	go s.handleGlobalRequests(ctx, conn, fwd, reqs, log)
+
+	// Optional keepalive prober.
+	if s.cfg.ClientAliveInterval > 0 {
+		max := s.cfg.ClientAliveCountMax
+		if max <= 0 {
+			max = 3
+		}
+		probeCtx, probeCancel := context.WithCancel(ctx)
+		defer probeCancel()
+		go func() {
+			t := time.NewTicker(s.cfg.ClientAliveInterval)
+			defer t.Stop()
+			fails := 0
+			for {
+				select {
+				case <-probeCtx.Done():
+					return
+				case <-t.C:
+					_, _, err := conn.SendRequest("keepalive@openssh.com", true, nil)
+					if err != nil {
+						fails++
+						if fails >= max {
+							log.Info("keepalive timed out; closing connection", "fails", fails)
+							_ = conn.Close()
+							return
+						}
+					} else {
+						fails = 0
+					}
+				}
+			}
+		}()
+	}
 
 	// Dispatch channels.
 	for newCh := range chans {
