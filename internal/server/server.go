@@ -12,8 +12,10 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -297,111 +299,144 @@ func (s *Server) handleDirectTCPIP(_ context.Context, newCh ssh.NewChannel, _ *s
 	_ = newCh.Reject(ssh.Prohibited, "direct-tcpip not yet implemented") // TODO(task 8)
 }
 
-// handleSession drives a single session channel: exec / shell / pty-req.
-// The PTY side (shell + pty-req) is filled in by task 6; here we
-// support "exec" for non-interactive commands only.
+// handleSession drives a single session channel. It collects env and
+// pty-req state, then on exec/shell dispatches a runner goroutine and
+// pipes subsequent window-change/signal requests to it.
 func (s *Server) handleSession(ctx context.Context, conn *ssh.ServerConn, newCh ssh.NewChannel, log *slog.Logger) {
 	ch, reqs, err := newCh.Accept()
 	if err != nil {
 		log.Warn("session accept failed", "err", err)
 		return
 	}
-	defer ch.Close()
 
-	var (
-		env         [][2]string
-		ptyReq      *PTYRequest
-		wantedShell bool
-		execCmd     string
-		finished    bool
-	)
-	forcedCmd := ""
+	state := &sessionState{
+		ctx:    ctx,
+		server: s,
+		conn:   conn,
+		ch:     ch,
+		log:    log,
+		resize: make(chan winSize, 8),
+		done:   make(chan struct{}),
+	}
 	if conn.Permissions != nil {
-		forcedCmd = conn.Permissions.CriticalOptions["force-command"]
+		state.forcedCmd = conn.Permissions.CriticalOptions["force-command"]
 	}
 
 	for req := range reqs {
-		ok := false
-		switch req.Type {
-		case "env":
-			name, value, perr := parseEnvRequest(req.Payload)
-			if perr == nil && isSafeEnvName(name) {
-				env = append(env, [2]string{name, value})
-				ok = true
-			}
-		case "pty-req":
-			pr, perr := parsePTYReq(req.Payload)
-			if perr == nil && s.cfg.AllowPTY && !hasExt(conn, "no-pty") {
-				ptyReq = &pr
-				ok = true
-			}
-		case "exec":
-			if finished {
-				break
-			}
-			cmd, perr := parseStringRequest(req.Payload)
-			if perr != nil {
-				break
-			}
-			if !s.cfg.AllowExec && forcedCmd == "" {
-				break
-			}
-			if forcedCmd != "" {
-				// OpenSSH semantics: original command is put in
-				// SSH_ORIGINAL_COMMAND for logging; the forced
-				// command runs instead.
-				env = append(env, [2]string{"SSH_ORIGINAL_COMMAND", cmd})
-				execCmd = forcedCmd
-			} else {
-				execCmd = cmd
-			}
-			finished = true
-			ok = true
-		case "shell":
-			if finished {
-				break
-			}
-			if s.cfg.Shell == "" {
-				break
-			}
-			if forcedCmd != "" {
-				execCmd = forcedCmd
-			} else {
-				execCmd = "" // empty → interactive shell
-				wantedShell = true
-			}
-			finished = true
-			ok = true
-		case "window-change":
-			if ptyReq != nil {
-				pr2, perr := parseWindowChange(req.Payload)
-				if perr == nil {
-					ptyReq.Rows, ptyReq.Cols = pr2.Rows, pr2.Cols
-					ptyReq.Width, ptyReq.Height = pr2.Width, pr2.Height
-					ok = true
-				}
-			}
-		case "signal":
-			// Best-effort: ignore for now.
-			ok = true
+		state.handleRequest(req)
+		if state.started && state.doneReqs {
+			break
 		}
-		if req.WantReply {
-			_ = req.Reply(ok, nil)
-		}
-		if finished {
-			// Dispatch synchronously once we have a command; any
-			// further requests on this channel are still handled by
-			// the loop (e.g. window-change after shell starts).
-			go s.runCommand(ctx, ch, reqs, ptyReq, env, execCmd, wantedShell, log)
-			// Continue iterating for post-exec requests like
-			// window-change and signal — runCommand also reads from
-			// the channel I/O directly.
-		}
+	}
+	// After the request channel closes (or we stopped iterating),
+	// wait for any running command to finish before returning.
+	if state.started {
+		close(state.resize)
+		<-state.done
+	} else {
+		// Nothing ran — close the channel so the client unblocks.
+		_ = ch.Close()
 	}
 }
 
-// Helpers below are filled in properly by subsequent tasks. These
-// placeholders keep the compiler happy.
+type sessionState struct {
+	ctx    context.Context
+	server *Server
+	conn   *ssh.ServerConn
+	ch     ssh.Channel
+	log    *slog.Logger
+
+	env       [][2]string
+	ptyReq    *PTYRequest
+	forcedCmd string
+	started   bool
+	doneReqs  bool // set to true when we want to stop reading requests
+	resize    chan winSize
+	done      chan struct{}
+}
+
+type winSize struct{ Rows, Cols, Width, Height uint32 }
+
+func (st *sessionState) handleRequest(req *ssh.Request) {
+	ok := false
+	switch req.Type {
+	case "env":
+		name, value, perr := parseEnvRequest(req.Payload)
+		if perr == nil && isSafeEnvName(name) {
+			st.env = append(st.env, [2]string{name, value})
+			ok = true
+		}
+	case "pty-req":
+		if st.server.cfg.AllowPTY && !hasExt(st.conn, "no-pty") {
+			pr, perr := parsePTYReq(req.Payload)
+			if perr == nil {
+				st.ptyReq = &pr
+				ok = true
+			}
+		}
+	case "exec":
+		if !st.started {
+			cmd, perr := parseStringRequest(req.Payload)
+			if perr == nil {
+				cmdline := cmd
+				if st.forcedCmd != "" {
+					st.env = append(st.env, [2]string{"SSH_ORIGINAL_COMMAND", cmd})
+					cmdline = st.forcedCmd
+				}
+				if st.server.cfg.AllowExec || st.forcedCmd != "" {
+					st.started = true
+					ok = true
+					go st.run(cmdline, false)
+				}
+			}
+		}
+	case "shell":
+		if !st.started && st.server.cfg.Shell != "" {
+			cmdline := ""
+			if st.forcedCmd != "" {
+				cmdline = st.forcedCmd
+			}
+			st.started = true
+			ok = true
+			go st.run(cmdline, true)
+		}
+	case "window-change":
+		if st.ptyReq != nil {
+			pr, perr := parseWindowChange(req.Payload)
+			if perr == nil {
+				select {
+				case st.resize <- winSize{Rows: pr.Rows, Cols: pr.Cols, Width: pr.Width, Height: pr.Height}:
+				default:
+				}
+				ok = true
+			}
+		}
+	case "signal":
+		// Best-effort: ignored for now. Forwarding POSIX signals to
+		// the child via pty is the usual route; not wired up yet.
+		ok = true
+	}
+	if req.WantReply {
+		_ = req.Reply(ok, nil)
+	}
+}
+
+// run dispatches to the exec or PTY runner and signals completion.
+func (st *sessionState) run(command string, wantShell bool) {
+	defer close(st.done)
+	if st.ptyReq != nil {
+		st.runPTY(command, wantShell)
+		return
+	}
+	if wantShell && command == "" {
+		// A "shell" request without pty-req: start an interactive
+		// shell piped through the channel. Some clients do this when
+		// invoked with -T.
+		st.runPipe(st.server.cfg.Shell, nil)
+		return
+	}
+	st.runPipe(st.server.cfg.Shell, []string{"-c", command})
+}
 
 func hasExt(conn *ssh.ServerConn, name string) bool {
 	if conn.Permissions == nil {
@@ -410,78 +445,92 @@ func hasExt(conn *ssh.ServerConn, name string) bool {
 	return conn.Permissions.Extensions[name] == "1"
 }
 
-// runCommand is completed in later tasks for the PTY path. For now,
-// it handles the "exec" case.
-func (s *Server) runCommand(
-	ctx context.Context,
-	ch ssh.Channel,
-	reqs <-chan *ssh.Request,
-	ptyReq *PTYRequest,
-	env [][2]string,
-	command string,
-	wantedShell bool,
-	log *slog.Logger,
-) {
-	_ = reqs // consumed by handleSession's loop
-	_ = ptyReq
-	_ = wantedShell
-
-	if command == "" {
-		// Shell requested but PTY path not ready yet — reject.
-		_ = sendExitStatus(ch, 1)
-		return
-	}
-
-	// Run through the configured shell with -c so quoting matches what
-	// OpenSSH does.
-	shell := s.cfg.Shell
+// runPipe runs cmd with its stdio plumbed over the SSH channel.
+// Use this when no PTY was requested.
+func (st *sessionState) runPipe(shell string, args []string) {
 	if shell == "" {
 		shell = "/bin/sh"
 	}
-	cmd := exec.CommandContext(ctx, shell, "-c", command)
-	cmd.Env = envToList(env)
-	// Pipe stdin manually so cmd.Wait() does not block on an
-	// SSH channel Read that never returns.
+	cmd := exec.CommandContext(st.ctx, shell, args...)
+	cmd.Env = st.finalEnv(false)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		fmt.Fprintf(ch.Stderr(), "gossh: stdin pipe: %v\n", err)
-		_ = sendExitStatus(ch, 127)
-		_ = ch.Close()
+		fmt.Fprintf(st.ch.Stderr(), "gossh: stdin pipe: %v\n", err)
+		_ = sendExitStatus(st.ch, 127)
+		_ = st.ch.Close()
 		return
 	}
-	cmd.Stdout = ch
-	cmd.Stderr = ch.Stderr()
-
+	cmd.Stdout = st.ch
+	cmd.Stderr = st.ch.Stderr()
 	if err := cmd.Start(); err != nil {
-		log.Warn("exec start failed", "err", err)
-		fmt.Fprintf(ch.Stderr(), "gossh: %v\n", err)
-		_ = sendExitStatus(ch, 127)
-		_ = ch.Close()
+		st.log.Warn("exec start failed", "err", err)
+		fmt.Fprintf(st.ch.Stderr(), "gossh: %v\n", err)
+		_ = sendExitStatus(st.ch, 127)
+		_ = st.ch.Close()
 		return
 	}
-	// Shovel client stdin into the child. When the channel closes
-	// (client sent EOF or we call ch.Close() on the server side),
-	// this goroutine exits and the child sees EOF on stdin.
 	go func() {
-		_, _ = io.Copy(stdin, ch)
+		_, _ = io.Copy(stdin, st.ch)
 		_ = stdin.Close()
 	}()
 	waitErr := cmd.Wait()
-	status := 0
-	if waitErr != nil {
-		var ee *exec.ExitError
-		if errors.As(waitErr, &ee) {
-			status = ee.ExitCode()
-			if status < 0 {
-				status = 1
-			}
-		} else {
-			status = 1
-		}
+	_ = st.ch.CloseWrite()
+	_ = sendExitStatus(st.ch, exitStatus(waitErr))
+	_ = st.ch.Close()
+}
+
+func exitStatus(err error) int {
+	if err == nil {
+		return 0
 	}
-	_ = ch.CloseWrite()
-	_ = sendExitStatus(ch, status)
-	_ = ch.Close() // unblocks the Stdin-copy goroutine
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		if ee.ExitCode() >= 0 {
+			return ee.ExitCode()
+		}
+		// Killed by signal — report 128+signum like a shell would.
+		if ws, ok := ee.Sys().(interface{ Signal() os.Signal }); ok {
+			if sig, ok := ws.Signal().(syscall.Signal); ok {
+				return 128 + int(sig)
+			}
+		}
+		return 1
+	}
+	return 1
+}
+
+func (st *sessionState) finalEnv(isPTY bool) []string {
+	base := append([]string(nil),
+		"HOME="+os.Getenv("HOME"),
+		"USER="+os.Getenv("USER"),
+		"LOGNAME="+os.Getenv("USER"),
+		"SHELL="+st.server.cfg.Shell,
+		"PATH="+osPath(),
+	)
+	if isPTY && st.ptyReq != nil && st.ptyReq.Term != "" {
+		base = append(base, "TERM="+st.ptyReq.Term)
+	}
+	if addr, ok := st.conn.RemoteAddr().(*net.TCPAddr); ok {
+		// SSH_CONNECTION format: client_ip client_port server_ip server_port
+		local, _ := st.conn.LocalAddr().(*net.TCPAddr)
+		lip, lp := "", 0
+		if local != nil {
+			lip, lp = local.IP.String(), local.Port
+		}
+		base = append(base, fmt.Sprintf("SSH_CONNECTION=%s %d %s %d", addr.IP, addr.Port, lip, lp))
+	}
+	// Client-provided env on top (filtered in isSafeEnvName).
+	for _, kv := range st.env {
+		base = append(base, kv[0]+"="+kv[1])
+	}
+	return base
+}
+
+func osPath() string {
+	if p := os.Getenv("PATH"); p != "" {
+		return p
+	}
+	return "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 }
 
 func envToList(env [][2]string) []string {
