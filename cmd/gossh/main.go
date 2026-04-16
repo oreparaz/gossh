@@ -13,6 +13,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strconv"
@@ -20,6 +21,7 @@ import (
 	"syscall"
 
 	"github.com/oscar/gossh/internal/client"
+	"github.com/oscar/gossh/internal/forward"
 	"github.com/oscar/gossh/internal/knownhosts"
 )
 
@@ -94,10 +96,47 @@ func run() (int, error) {
 	}
 	defer c.Close()
 
-	// Port forwarding plumbing is added in task 10.
-	_ = locals
-	_ = remotes
-	_ = dynamics
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	// Set up forwardings.
+	var stops []func()
+	for _, spec := range locals {
+		s, err := forward.ParseLocal(spec)
+		if err != nil {
+			return 2, fmt.Errorf("-L %s: %w", spec, err)
+		}
+		stop, err := forward.Local(ctx, c.Raw(), s, log)
+		if err != nil {
+			return 255, err
+		}
+		stops = append(stops, stop)
+	}
+	for _, spec := range remotes {
+		s, err := forward.ParseLocal(spec)
+		if err != nil {
+			return 2, fmt.Errorf("-R %s: %w", spec, err)
+		}
+		stop, err := forward.Remote(ctx, c.Raw(), s, log)
+		if err != nil {
+			return 255, err
+		}
+		stops = append(stops, stop)
+	}
+	for _, spec := range dynamics {
+		s, err := forward.ParseDynamic(spec)
+		if err != nil {
+			return 2, fmt.Errorf("-D %s: %w", spec, err)
+		}
+		stop, err := forward.Dynamic(ctx, c.Raw(), s, log)
+		if err != nil {
+			return 255, err
+		}
+		stops = append(stops, stop)
+	}
+	defer func() {
+		for _, s := range stops {
+			s()
+		}
+	}()
 
 	if *noCommand {
 		<-ctx.Done()
