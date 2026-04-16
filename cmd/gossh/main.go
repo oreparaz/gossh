@@ -1,0 +1,173 @@
+// Command gossh is a minimal ssh-compatible client.
+//
+// Usage:
+//
+//	gossh [flags] [user@]host[:port] [command...]
+//
+// Flags are a small subset of openssh-client: -i, -p, -l, -L, -R, -D,
+// -T, -t, -o StrictHostKeyChecking, -N, -v.
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"os"
+	"os/signal"
+	"strconv"
+	"strings"
+	"syscall"
+
+	"github.com/oscar/gossh/internal/client"
+	"github.com/oscar/gossh/internal/knownhosts"
+)
+
+func main() {
+	code, err := run()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "gossh:", err)
+		if code == 0 {
+			code = 1
+		}
+	}
+	os.Exit(code)
+}
+
+type multiFlag []string
+
+func (m *multiFlag) String() string     { return fmt.Sprintf("%v", []string(*m)) }
+func (m *multiFlag) Set(s string) error { *m = append(*m, s); return nil }
+
+func run() (int, error) {
+	var (
+		port          = flag.Int("p", 22, "remote port")
+		login         = flag.String("l", "", "remote username (overrides user@host)")
+		identities    multiFlag
+		locals        multiFlag
+		remotes       multiFlag
+		dynamics      multiFlag
+		forceTTY      = flag.Bool("t", false, "force PTY allocation")
+		disableTTY    = flag.Bool("T", false, "disable PTY allocation")
+		noCommand     = flag.Bool("N", false, "do not execute a remote command (useful for forwarding)")
+		strict        = flag.String("strict-host-key", "accept-new", "ask (strict reject), yes (strict), accept-new (TOFU), no (off)")
+		knownHostsArg = flag.String("known-hosts", "", "override known_hosts path")
+	)
+	flag.Var(&identities, "i", "path to identity file (repeatable)")
+	flag.Var(&locals, "L", "local forward: [bind:]port:host:hostport (repeatable)")
+	flag.Var(&remotes, "R", "remote forward: [bind:]port:host:hostport (repeatable)")
+	flag.Var(&dynamics, "D", "dynamic SOCKS5 forward: [bind:]port (repeatable)")
+	flag.Parse()
+
+	if flag.NArg() < 1 {
+		return 2, errors.New("usage: gossh [flags] [user@]host[:port] [command...]")
+	}
+	target := flag.Arg(0)
+	user, host, remotePort, err := parseTarget(target, *port)
+	if err != nil {
+		return 2, err
+	}
+	if *login != "" {
+		user = *login
+	}
+
+	mode, err := parseStrict(*strict)
+	if err != nil {
+		return 2, err
+	}
+
+	cfg := client.Config{
+		Host:           host,
+		Port:           remotePort,
+		User:           user,
+		IdentityFiles:  identities,
+		KnownHostsPath: *knownHostsArg,
+		HostCheckMode:  mode,
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	c, err := client.Dial(ctx, cfg)
+	if err != nil {
+		return 255, err
+	}
+	defer c.Close()
+
+	// Port forwarding plumbing is added in task 10.
+	_ = locals
+	_ = remotes
+	_ = dynamics
+
+	if *noCommand {
+		<-ctx.Done()
+		return 0, nil
+	}
+
+	remoteArgs := flag.Args()[1:]
+
+	switch {
+	case len(remoteArgs) == 0 && !*disableTTY:
+		status, err := c.Shell()
+		return status, err
+	case *forceTTY:
+		status, err := c.ExecInteractive(strings.Join(remoteArgs, " "))
+		return status, err
+	default:
+		status, err := c.Exec(strings.Join(remoteArgs, " "), os.Stdin, os.Stdout, os.Stderr)
+		return status, err
+	}
+}
+
+func parseTarget(s string, defPort int) (user, host string, port int, err error) {
+	port = defPort
+	// user@host[:port]
+	if at := strings.LastIndex(s, "@"); at >= 0 {
+		user = s[:at]
+		s = s[at+1:]
+	}
+	// IPv6 bracketed?
+	if strings.HasPrefix(s, "[") {
+		end := strings.Index(s, "]")
+		if end < 0 {
+			return "", "", 0, fmt.Errorf("unterminated IPv6 bracket in %q", s)
+		}
+		host = s[1:end]
+		rest := s[end+1:]
+		if rest != "" {
+			if !strings.HasPrefix(rest, ":") {
+				return "", "", 0, fmt.Errorf("unexpected %q after IPv6", rest)
+			}
+			p, perr := strconv.Atoi(rest[1:])
+			if perr != nil {
+				return "", "", 0, fmt.Errorf("bad port %q", rest[1:])
+			}
+			port = p
+		}
+		return user, host, port, nil
+	}
+	if i := strings.LastIndex(s, ":"); i >= 0 {
+		host = s[:i]
+		p, perr := strconv.Atoi(s[i+1:])
+		if perr != nil {
+			return "", "", 0, fmt.Errorf("bad port %q", s[i+1:])
+		}
+		port = p
+	} else {
+		host = s
+	}
+	return user, host, port, nil
+}
+
+func parseStrict(v string) (knownhosts.Mode, error) {
+	switch v {
+	case "yes", "ask", "strict":
+		return knownhosts.Strict, nil
+	case "accept-new", "":
+		return knownhosts.AcceptNew, nil
+	case "no", "off":
+		return knownhosts.Off, nil
+	default:
+		return 0, fmt.Errorf("unknown strict-host-key %q", v)
+	}
+}
