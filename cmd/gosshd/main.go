@@ -24,6 +24,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/oscar/gossh/internal/audit"
 	"github.com/oscar/gossh/internal/authkeys"
 	"github.com/oscar/gossh/internal/hostkey"
 	"github.com/oscar/gossh/internal/server"
@@ -53,6 +54,8 @@ func run() error {
 		shutdownGr   = flag.Duration("shutdown-grace", 10*time.Second, "on SIGTERM, wait this long for sessions to drain before killing them")
 		kaInterval   = flag.Duration("client-alive-interval", 0, "send keepalive every N if idle (0 disables)")
 		kaCount      = flag.Int("client-alive-count-max", 3, "disconnect after this many consecutive keepalive failures")
+		auditPath    = flag.String("audit-log", "", "append JSON-lines audit events to this file (0600)")
+		auditFsync   = flag.Bool("audit-fsync", false, "fsync after every audit event (expensive, safer)")
 		configPath   = flag.String("f", "", "path to sshd_config (CLI flags override file values)")
 		verbose      = flag.Bool("v", false, "verbose logging")
 	)
@@ -114,6 +117,16 @@ func run() error {
 		return fmt.Errorf("authorized_keys: %w", err)
 	}
 
+	var auditLog audit.Logger = audit.Nop
+	if *auditPath != "" {
+		f, err := audit.OpenFile(*auditPath)
+		if err != nil {
+			return fmt.Errorf("open audit log %s: %w", *auditPath, err)
+		}
+		defer f.Close()
+		auditLog = &audit.JSONLogger{Writer: f, Fsync: *auditFsync}
+	}
+
 	cfg := server.Config{
 		ListenAddr:          *listen,
 		HostKeys:            signers,
@@ -130,6 +143,7 @@ func run() error {
 		ClientAliveInterval: *kaInterval,
 		ClientAliveCountMax: *kaCount,
 		Logger:              log,
+		Audit:               auditLog,
 	}
 
 	s, err := server.New(cfg)

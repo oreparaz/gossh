@@ -22,6 +22,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/oscar/gossh/internal/audit"
 	"github.com/oscar/gossh/internal/authkeys"
 	"github.com/oscar/gossh/internal/sshcrypto"
 )
@@ -93,6 +94,10 @@ type Config struct {
 	// Logger receives structured log events. If nil, a discard
 	// handler is used.
 	Logger *slog.Logger
+
+	// Audit receives security-relevant events (auth, session, forward
+	// open/close). If nil, events are dropped. See internal/audit.
+	Audit audit.Logger
 }
 
 // AuthorizedKeysFunc returns the authorized keys for an SSH login
@@ -112,6 +117,7 @@ type Server struct {
 	cfg     Config
 	log     *slog.Logger
 	limiter *ipLimiter
+	audit   audit.Logger
 }
 
 // New validates the config and returns a Server.
@@ -135,7 +141,11 @@ func New(cfg Config) (*Server, error) {
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	return &Server{cfg: cfg, log: log, limiter: newIPLimiter(cfg.MaxConnectionsPerIP)}, nil
+	a := cfg.Audit
+	if a == nil {
+		a = audit.Nop
+	}
+	return &Server{cfg: cfg, log: log, limiter: newIPLimiter(cfg.MaxConnectionsPerIP), audit: a}, nil
 }
 
 // ListenAndServe binds cfg.ListenAddr and serves until ctx is cancelled.
@@ -216,12 +226,23 @@ func (s *Server) handle(ctx context.Context, nc net.Conn) {
 	defer nc.Close()
 	remoteStr := nc.RemoteAddr().String()
 	log := s.log.With("remote", remoteStr)
+	connectedAt := time.Now()
+
+	s.audit.Emit(audit.Event{
+		Type:   audit.TypeConnectionAccept,
+		Remote: remoteStr,
+	})
 
 	// Per-IP concurrency cap. We reject *after* accept (cannot stop
 	// the connect itself), but drop fast.
 	release, ok := s.limiter.acquire(nc.RemoteAddr())
 	if !ok {
 		log.Warn("per-IP connection cap reached; rejecting")
+		s.audit.Emit(audit.Event{
+			Type:   audit.TypeConnectionReject,
+			Remote: remoteStr,
+			Fields: map[string]interface{}{"reason": "per-ip-cap"},
+		})
 		return
 	}
 	defer release()
@@ -234,12 +255,27 @@ func (s *Server) handle(ctx context.Context, nc net.Conn) {
 	conn, chans, reqs, err := ssh.NewServerConn(nc, sshCfg)
 	if err != nil {
 		log.Info("handshake failed", "err", err)
+		s.audit.Emit(audit.Event{
+			Type:   audit.TypeHandshakeFail,
+			Remote: remoteStr,
+			Fields: map[string]interface{}{"err": err.Error()},
+		})
 		return
 	}
 	// Clear deadline now that we are authenticated.
 	_ = nc.SetDeadline(time.Time{})
 
-	defer conn.Close()
+	defer func() {
+		s.audit.Emit(audit.Event{
+			Type:   audit.TypeConnectionClose,
+			Remote: remoteStr,
+			User:   conn.User(),
+			Fields: map[string]interface{}{
+				"duration_ms": time.Since(connectedAt).Milliseconds(),
+			},
+		})
+		_ = conn.Close()
+	}()
 	log = log.With("user", conn.User(), "client", string(conn.ClientVersion()))
 	log.Info("connected")
 
@@ -272,6 +308,10 @@ func (s *Server) handle(ctx context.Context, nc net.Conn) {
 						fails++
 						if fails >= max {
 							log.Info("keepalive timed out; closing connection", "fails", fails)
+							s.audit.Emit(audit.Event{
+								Type: audit.TypeKeepaliveTimeout, Remote: conn.RemoteAddr().String(), User: conn.User(),
+								Fields: map[string]interface{}{"fails": fails},
+							})
 							_ = conn.Close()
 							return
 						}
@@ -320,13 +360,22 @@ func (s *Server) serverConfig(remoteStr string, log *slog.Logger) *ssh.ServerCon
 	}
 	cfg.PublicKeyCallback = func(md ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
 		user := md.User()
+		fp := ssh.FingerprintSHA256(key)
 		entries, err := s.cfg.AuthorizedKeys(user)
 		if err != nil {
 			log.Warn("authorized_keys lookup failed", "user", user, "err", err)
+			s.audit.Emit(audit.Event{
+				Type: audit.TypeAuthFail, Remote: remoteStr, User: user,
+				Fields: map[string]interface{}{"reason": "authorized_keys", "err": err.Error(), "fp": fp},
+			})
 			return nil, errors.New("unauthorized")
 		}
 		entry, err := authkeys.Find(entries, key)
 		if err != nil {
+			s.audit.Emit(audit.Event{
+				Type: audit.TypeAuthFail, Remote: remoteStr, User: user,
+				Fields: map[string]interface{}{"reason": "key-not-authorized", "fp": fp},
+			})
 			return nil, errors.New("unauthorized")
 		}
 		// Pass the option set through Permissions.Extensions so the
@@ -340,7 +389,15 @@ func (s *Server) serverConfig(remoteStr string, log *slog.Logger) *ssh.ServerCon
 		}
 		// Encode option flags for the session handler.
 		encodePermBools(perms, entry.Options)
-		log.Info("pubkey authenticated", "user", user, "fp", ssh.FingerprintSHA256(key))
+		log.Info("pubkey authenticated", "user", user, "fp", fp)
+		s.audit.Emit(audit.Event{
+			Type: audit.TypeAuthOK, Remote: remoteStr, User: user,
+			Fields: map[string]interface{}{
+				"fp":         fp,
+				"key_type":   key.Type(),
+				"has_forced": entry.Options.Command != "",
+			},
+		})
 		return perms, nil
 	}
 	return cfg
@@ -448,16 +505,24 @@ func (s *Server) handleDirectTCPIP(ctx context.Context, conn *ssh.ServerConn, ne
 		_ = newCh.Reject(ssh.ConnectionFailed, "bad direct-tcpip payload")
 		return
 	}
+	target := net.JoinHostPort(req.DestAddr, fmt.Sprintf("%d", req.DestPort))
 	if !permitOpenAllows(permitOpenFromExt(conn.Permissions, "permitopen"), req.DestAddr, req.DestPort) {
 		log.Warn("direct-tcpip rejected by permitopen", "dest", req.DestAddr, "port", req.DestPort)
+		s.audit.Emit(audit.Event{
+			Type: audit.TypeDirectTCPIPReject, Remote: conn.RemoteAddr().String(), User: conn.User(),
+			Fields: map[string]interface{}{"target": target, "reason": "permitopen"},
+		})
 		_ = newCh.Reject(ssh.Prohibited, "target not in permitopen")
 		return
 	}
-	target := net.JoinHostPort(req.DestAddr, fmt.Sprintf("%d", req.DestPort))
 	d := net.Dialer{Timeout: 10 * time.Second}
 	tcpConn, err := d.DialContext(ctx, "tcp", target)
 	if err != nil {
 		log.Info("direct-tcpip dial failed", "target", target, "err", err)
+		s.audit.Emit(audit.Event{
+			Type: audit.TypeDirectTCPIPReject, Remote: conn.RemoteAddr().String(), User: conn.User(),
+			Fields: map[string]interface{}{"target": target, "reason": "dial-fail", "err": err.Error()},
+		})
 		_ = newCh.Reject(ssh.ConnectionFailed, "dial: "+err.Error())
 		return
 	}
@@ -467,7 +532,16 @@ func (s *Server) handleDirectTCPIP(ctx context.Context, conn *ssh.ServerConn, ne
 		return
 	}
 	go ssh.DiscardRequests(reqs)
+	openedAt := time.Now()
+	s.audit.Emit(audit.Event{
+		Type: audit.TypeDirectTCPIPOpen, Remote: conn.RemoteAddr().String(), User: conn.User(),
+		Fields: map[string]interface{}{"target": target},
+	})
 	spliceChannel(ch, tcpConn)
+	s.audit.Emit(audit.Event{
+		Type: audit.TypeDirectTCPIPClose, Remote: conn.RemoteAddr().String(), User: conn.User(),
+		Fields: map[string]interface{}{"target": target, "duration_ms": time.Since(openedAt).Milliseconds()},
+	})
 	log.Info("direct-tcpip closed", "target", target)
 }
 
@@ -502,15 +576,19 @@ func (s *Server) handleSession(ctx context.Context, conn *ssh.ServerConn, newCh 
 		log.Warn("session accept failed", "err", err)
 		return
 	}
+	s.audit.Emit(audit.Event{
+		Type: audit.TypeSessionOpen, Remote: conn.RemoteAddr().String(), User: conn.User(),
+	})
 
 	state := &sessionState{
-		ctx:    ctx,
-		server: s,
-		conn:   conn,
-		ch:     ch,
-		log:    log,
-		resize: make(chan winSize, 8),
-		done:   make(chan struct{}),
+		ctx:      ctx,
+		server:   s,
+		conn:     conn,
+		ch:       ch,
+		log:      log,
+		resize:   make(chan winSize, 8),
+		done:     make(chan struct{}),
+		openedAt: time.Now(),
 	}
 	if conn.Permissions != nil {
 		state.forcedCmd = conn.Permissions.CriticalOptions["force-command"]
@@ -531,6 +609,14 @@ func (s *Server) handleSession(ctx context.Context, conn *ssh.ServerConn, newCh 
 		// Nothing ran — close the channel so the client unblocks.
 		_ = ch.Close()
 	}
+	s.audit.Emit(audit.Event{
+		Type: audit.TypeSessionClose, Remote: conn.RemoteAddr().String(), User: conn.User(),
+		Fields: map[string]interface{}{
+			"duration_ms": time.Since(state.openedAt).Milliseconds(),
+			"exit":        state.exitCode,
+			"started":     state.started,
+		},
+	})
 }
 
 type sessionState struct {
@@ -547,6 +633,8 @@ type sessionState struct {
 	doneReqs  bool // set to true when we want to stop reading requests
 	resize    chan winSize
 	done      chan struct{}
+	openedAt  time.Time
+	exitCode  int // populated by runPipe/runPTY for audit log
 
 	cmdMu sync.Mutex
 	cmd   *exec.Cmd
@@ -647,6 +735,15 @@ func (st *sessionState) handleRequest(req *ssh.Request) {
 					cmdline = st.forcedCmd
 				}
 				if st.server.cfg.AllowExec || st.forcedCmd != "" {
+					st.server.audit.Emit(audit.Event{
+						Type: audit.TypeSessionExec, Remote: st.conn.RemoteAddr().String(), User: st.conn.User(),
+						Fields: map[string]interface{}{
+							"command":        cmdline,
+							"client_command": cmd,
+							"forced":         st.forcedCmd != "",
+							"pty":            st.ptyReq != nil,
+						},
+					})
 					st.started = true
 					ok = true
 					go st.run(cmdline, false)
@@ -659,6 +756,14 @@ func (st *sessionState) handleRequest(req *ssh.Request) {
 			if st.forcedCmd != "" {
 				cmdline = st.forcedCmd
 			}
+			st.server.audit.Emit(audit.Event{
+				Type: audit.TypeSessionShell, Remote: st.conn.RemoteAddr().String(), User: st.conn.User(),
+				Fields: map[string]interface{}{
+					"forced":  st.forcedCmd != "",
+					"pty":     st.ptyReq != nil,
+					"command": cmdline,
+				},
+			})
 			st.started = true
 			ok = true
 			go st.run(cmdline, true)
@@ -678,6 +783,10 @@ func (st *sessionState) handleRequest(req *ssh.Request) {
 		name, perr := parseStringRequest(req.Payload)
 		if perr == nil && st.deliverSignal(name) {
 			ok = true
+			st.server.audit.Emit(audit.Event{
+				Type: audit.TypeSessionSignal, Remote: st.conn.RemoteAddr().String(), User: st.conn.User(),
+				Fields: map[string]interface{}{"name": name},
+			})
 		}
 	}
 	if req.WantReply {
@@ -745,8 +854,9 @@ func (st *sessionState) runPipe(shell string, args []string) {
 		_ = stdin.Close()
 	}()
 	waitErr := cmd.Wait()
+	st.exitCode = exitStatus(waitErr)
 	_ = st.ch.CloseWrite()
-	_ = sendExitStatus(st.ch, exitStatus(waitErr))
+	_ = sendExitStatus(st.ch, st.exitCode)
 	_ = st.ch.Close()
 }
 

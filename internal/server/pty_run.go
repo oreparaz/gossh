@@ -62,9 +62,10 @@ func (st *sessionState) runPTY(command string, wantShell bool) {
 	}()
 
 	waitErr := cmd.Wait()
+	st.exitCode = exitStatus(waitErr)
 	_ = ses.Close() // master close → outputDone unblocks → send exit
 	<-outputDone
 	_ = st.ch.CloseWrite()
-	_ = sendExitStatus(st.ch, exitStatus(waitErr))
+	_ = sendExitStatus(st.ch, st.exitCode)
 	_ = st.ch.Close()
 }

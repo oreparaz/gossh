@@ -6,9 +6,11 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/oscar/gossh/internal/audit"
 	"github.com/oscar/gossh/internal/authkeys"
 )
 
@@ -83,15 +85,27 @@ func (s *Server) doRemoteForward(ctx context.Context, conn *ssh.ServerConn, fwd 
 	if req.Type == "cancel-tcpip-forward" {
 		ok := fwd.removeKey(body.BindAddr, body.BindPort)
 		_ = req.Reply(ok, nil)
+		s.audit.Emit(audit.Event{
+			Type: audit.TypeTCPIPForwardCancel, Remote: conn.RemoteAddr().String(), User: conn.User(),
+			Fields: map[string]interface{}{"host": body.BindAddr, "port": body.BindPort, "ok": ok},
+		})
 		return
 	}
 
 	if hasExt(conn, "no-port-forwarding") {
+		s.audit.Emit(audit.Event{
+			Type: audit.TypeTCPIPForwardReject, Remote: conn.RemoteAddr().String(), User: conn.User(),
+			Fields: map[string]interface{}{"host": body.BindAddr, "port": body.BindPort, "reason": "no-port-forwarding"},
+		})
 		_ = req.Reply(false, nil)
 		return
 	}
 	if !permitListenAllows(permitOpenFromExt(conn.Permissions, "permitlisten"), body.BindAddr, body.BindPort) {
 		log.Warn("tcpip-forward rejected by permitlisten", "host", body.BindAddr, "port", body.BindPort)
+		s.audit.Emit(audit.Event{
+			Type: audit.TypeTCPIPForwardReject, Remote: conn.RemoteAddr().String(), User: conn.User(),
+			Fields: map[string]interface{}{"host": body.BindAddr, "port": body.BindPort, "reason": "permitlisten"},
+		})
 		_ = req.Reply(false, nil)
 		return
 	}
@@ -111,6 +125,10 @@ func (s *Server) doRemoteForward(ctx context.Context, conn *ssh.ServerConn, fwd 
 	}
 	actualPort := uint32(l.Addr().(*net.TCPAddr).Port)
 	fwd.add(body.BindAddr, body.BindPort, l)
+	s.audit.Emit(audit.Event{
+		Type: audit.TypeTCPIPForwardBind, Remote: conn.RemoteAddr().String(), User: conn.User(),
+		Fields: map[string]interface{}{"host": body.BindAddr, "port": actualPort},
+	})
 
 	// Reply with the actual bound port when the client asked for 0.
 	if body.BindPort == 0 {
@@ -165,7 +183,16 @@ func (s *Server) acceptRemoteForward(ctx context.Context, conn *ssh.ServerConn, 
 				return
 			}
 			go ssh.DiscardRequests(reqs)
+			openedAt := time.Now()
+			s.audit.Emit(audit.Event{
+				Type: audit.TypeForwardedTCPIPOpen, Remote: conn.RemoteAddr().String(), User: conn.User(),
+				Fields: map[string]interface{}{"bind_host": bindHost, "bind_port": bindPort, "orig": c.RemoteAddr().String()},
+			})
 			spliceChannel(ch, c)
+			s.audit.Emit(audit.Event{
+				Type: audit.TypeForwardedTCPIPClose, Remote: conn.RemoteAddr().String(), User: conn.User(),
+				Fields: map[string]interface{}{"bind_host": bindHost, "bind_port": bindPort, "duration_ms": time.Since(openedAt).Milliseconds()},
+			})
 		}()
 		_ = ctx
 	}
