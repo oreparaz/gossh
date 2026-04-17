@@ -120,6 +120,10 @@ func (s *Server) doRemoteForward(ctx context.Context, conn *ssh.ServerConn, fwd 
 	l, err := net.Listen("tcp", laddr)
 	if err != nil {
 		log.Info("tcpip-forward listen failed", "addr", laddr, "err", err)
+		s.audit.Emit(audit.Event{
+			Type: audit.TypeTCPIPForwardReject, Remote: conn.RemoteAddr().String(), User: conn.User(),
+			Fields: map[string]interface{}{"host": body.BindAddr, "port": body.BindPort, "reason": "listen-fail", "err": err.Error()},
+		})
 		_ = req.Reply(false, nil)
 		return
 	}
