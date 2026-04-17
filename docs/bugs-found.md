@@ -161,10 +161,9 @@ A bad session could thus kill the whole server.
 Entries were cached forever. Revoking a key required restarting
 the server.
 
-**Fix:** `ReloadingAuthorizedKeys` stat the file on each auth and
-re-parses when mtime changes. CLI flag
-`-reload-authorized-keys` (on by default). Test
-`TestReloadingAuthorizedKeysRevocationE2E`.
+**Fix:** `ReloadingAuthorizedKeys` stats the file on each auth and
+re-parses when mtime changes. `gosshd` always uses it — there is
+no off-switch. Test `TestReloadingAuthorizedKeysRevocationE2E`.
 
 ### 16. TOCTOU between perm check and file open
 

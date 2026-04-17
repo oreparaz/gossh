@@ -10,7 +10,6 @@ default lives in code.
 | `-listen` | `0.0.0.0:2222` | TCP bind address |
 | `-host-key` | `./host_ed25519` | Path(s) to host private keys; repeatable. Generates ed25519 if missing. |
 | `-authorized-keys` | *(required)* | File listing authorised public keys |
-| `-reload-authorized-keys` | `true` | Re-parse when mtime changes; revocation takes effect on next auth |
 | `-shell` | `/bin/bash` | Shell launched for `shell` / PTY requests |
 | `-allow-exec` | `true` | Accept `exec` channel requests |
 | `-allow-pty` | `true` | Accept `pty-req` |
