@@ -143,6 +143,29 @@ func TestLoadOrGenerate(t *testing.T) {
 // TestInteropWithSSHKeygen parses the public key we emitted using the
 // system ssh-keygen, ensuring our on-disk format matches what OpenSSH
 // can read.
+// TestLoadOversizedFile ensures a gigantic "key file" (e.g., a symlink
+// to /dev/zero) does not exhaust memory. Load caps the read at 1 MiB.
+func TestLoadOversizedFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "huge")
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 2 MiB — over the Load cap.
+	if _, err := f.Write(make([]byte, 2<<20)); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	_, err = Load(path)
+	if err == nil {
+		t.Fatal("expected size-cap error")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("want size error, got %v", err)
+	}
+}
+
 // TestLoadEncryptedKeyFailsClean verifies that a passphrase-protected
 // private key produces a clean error rather than a crash or silent
 // accept. We don't support encrypted keys.

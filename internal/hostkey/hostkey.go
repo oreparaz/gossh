@@ -147,9 +147,15 @@ func Load(path string) (*KeyPair, error) {
 	if mode := info.Mode().Perm(); mode&0o077 != 0 {
 		return nil, fmt.Errorf("permissions %#o on %s are too open (want 0600)", mode, path)
 	}
-	buf, err := io.ReadAll(f)
+	// Even a 16384-bit RSA key is <20 KiB. A much higher cap rules
+	// out symlink-to-/dev/zero pranks without false-positives.
+	const maxKeySize = 1 << 20 // 1 MiB
+	buf, err := io.ReadAll(io.LimitReader(f, maxKeySize+1))
 	if err != nil {
 		return nil, err
+	}
+	if len(buf) > maxKeySize {
+		return nil, fmt.Errorf("private key %s exceeds %d bytes", path, maxKeySize)
 	}
 	priv, err := ssh.ParseRawPrivateKey(buf)
 	if err != nil {
