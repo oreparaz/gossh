@@ -140,6 +140,62 @@ func TestServerHandlesClientAbruptDisconnect(t *testing.T) {
 	}
 }
 
+// TestGlobalCapStopsFlood mirrors TestPerIPCapStopsFlood but for
+// the process-wide MaxConnections limit.
+func TestGlobalCapStopsFlood(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	r := startGosshdForLeakTestWith(t, func(c *server.Config) {
+		c.MaxConnections = 2
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	held := make([]*client.Client, 0, 2)
+	for i := 0; i < 2; i++ {
+		c, err := client.Dial(ctx, client.Config{
+			Host: r.Host, Port: r.Port, User: "u",
+			IdentityFiles:  []string{r.UserKeyPath},
+			KnownHostsPath: r.KnownHosts,
+			HostCheckMode:  knownhosts.Strict,
+			ConnectTimeout: 2 * time.Second,
+		})
+		if err != nil {
+			t.Fatalf("pre-cap connect %d failed: %v", i, err)
+		}
+		held = append(held, c)
+	}
+	defer func() {
+		for _, c := range held {
+			_ = c.Close()
+		}
+	}()
+
+	// A third connection must be rejected (or accepted-then-reset).
+	rejected := 0
+	for i := 0; i < 4; i++ {
+		c, err := client.Dial(ctx, client.Config{
+			Host: r.Host, Port: r.Port, User: "u",
+			IdentityFiles:  []string{r.UserKeyPath},
+			KnownHostsPath: r.KnownHosts,
+			HostCheckMode:  knownhosts.Strict,
+			ConnectTimeout: 2 * time.Second,
+		})
+		if err != nil {
+			rejected++
+			continue
+		}
+		if _, err := c.Exec("echo ok", nil, io.Discard, io.Discard); err != nil {
+			rejected++
+		}
+		_ = c.Close()
+	}
+	if rejected == 0 {
+		t.Fatal("global cap did not reject any extras")
+	}
+}
+
 // TestPerIPCapStopsFlood asserts that a per-IP cap is actually
 // enforced under a burst of connections from one address.
 func TestPerIPCapStopsFlood(t *testing.T) {
