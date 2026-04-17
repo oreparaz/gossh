@@ -80,3 +80,28 @@ func TestMatchFromCaseInsensitive(t *testing.T) {
 		t.Fatal("hostname match is case-insensitive")
 	}
 }
+
+func TestMatchFromStarMatchesAll(t *testing.T) {
+	if !MatchFrom([]string{"*"}, net.ParseIP("1.2.3.4"), "anything") {
+		t.Fatal("* should match any host")
+	}
+}
+
+func TestMatchFromDenyThenAllow(t *testing.T) {
+	// Regardless of order, the negation must win when its pattern matches.
+	patterns := []string{"!1.2.3.4", "*"}
+	if MatchFrom(patterns, net.ParseIP("1.2.3.4"), "") {
+		t.Fatal("negated IP must be denied even when * would allow")
+	}
+	if !MatchFrom(patterns, net.ParseIP("10.0.0.1"), "") {
+		t.Fatal("* should cover other IPs")
+	}
+}
+
+func TestMatchFromMalformedCIDRIsIgnored(t *testing.T) {
+	// A malformed CIDR pattern should not match anything; it must
+	// also not panic.
+	if MatchFrom([]string{"notacidr/99"}, net.ParseIP("1.2.3.4"), "") {
+		t.Fatal("malformed pattern should not match")
+	}
+}
