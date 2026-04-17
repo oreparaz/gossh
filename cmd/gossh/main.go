@@ -175,8 +175,20 @@ func run() (int, error) {
 	}()
 
 	if *noCommand {
-		<-ctx.Done()
-		return 0, nil
+		// Block until either the local signal cancels ctx or the
+		// SSH connection dies. Previously we only watched ctx, so a
+		// remote disconnect left gossh hung until the user killed it.
+		connErr := make(chan error, 1)
+		go func() { connErr <- c.Raw().Wait() }()
+		select {
+		case <-ctx.Done():
+			return 0, nil
+		case err := <-connErr:
+			if err != nil {
+				return 255, fmt.Errorf("connection lost: %w", err)
+			}
+			return 0, nil
+		}
 	}
 
 	remoteArgs := flag.Args()[1:]
