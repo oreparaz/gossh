@@ -210,7 +210,9 @@ func readAck(r *bufio.Reader, stderr io.Reader) error {
 
 // parseCLine parses "C<mode> <size> <name>" and returns (mode, size, name).
 func parseCLine(line string) (os.FileMode, int64, string, error) {
-	// Remove leading 'C'.
+	if len(line) == 0 || line[0] != 'C' {
+		return 0, 0, "", fmt.Errorf("expected C-line, got %q", line)
+	}
 	body := line[1:]
 	parts := strings.SplitN(body, " ", 3)
 	if len(parts) != 3 {
