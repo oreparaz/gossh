@@ -20,6 +20,7 @@ import (
 type remoteForwards struct {
 	mu        sync.Mutex
 	listeners map[string]net.Listener
+	closed    bool
 }
 
 func newRemoteForwards() *remoteForwards {
@@ -31,15 +32,22 @@ func keyFor(host string, port uint32) string {
 }
 
 // add stores l. If there is already a listener for that host/port
-// pair, the existing one is closed and replaced.
-func (r *remoteForwards) add(host string, port uint32, l net.Listener) {
+// pair, the existing one is closed and replaced. If closeAll has
+// already fired, l is closed immediately and not stored — preventing
+// the listener from outliving the SSH connection.
+func (r *remoteForwards) add(host string, port uint32, l net.Listener) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.closed {
+		_ = l.Close()
+		return false
+	}
 	k := keyFor(host, port)
 	if prev, ok := r.listeners[k]; ok {
 		_ = prev.Close()
 	}
 	r.listeners[k] = l
+	return true
 }
 
 // removeKey closes the listener for a given key, returning whether
@@ -57,10 +65,12 @@ func (r *remoteForwards) removeKey(host string, port uint32) bool {
 	return true
 }
 
-// closeAll shuts every listener down.
+// closeAll shuts every listener down and latches the registry as
+// closed so any in-flight add will close its new listener and bail.
 func (r *remoteForwards) closeAll() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.closed = true
 	for _, l := range r.listeners {
 		_ = l.Close()
 	}
@@ -128,7 +138,11 @@ func (s *Server) doRemoteForward(ctx context.Context, conn *ssh.ServerConn, fwd 
 		return
 	}
 	actualPort := uint32(l.Addr().(*net.TCPAddr).Port)
-	fwd.add(body.BindAddr, body.BindPort, l)
+	if !fwd.add(body.BindAddr, body.BindPort, l) {
+		// Connection is shutting down; the listener was closed by add.
+		_ = req.Reply(false, nil)
+		return
+	}
 	s.audit.Emit(audit.Event{
 		Type: audit.TypeTCPIPForwardBind, Remote: conn.RemoteAddr().String(), User: conn.User(),
 		Fields: map[string]interface{}{"host": body.BindAddr, "port": actualPort},
