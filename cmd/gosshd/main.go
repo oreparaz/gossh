@@ -51,6 +51,7 @@ func run() error {
 		loginGrace   = flag.Duration("login-grace", 120*time.Second, "max time to complete authentication")
 		maxAuth      = flag.Int("max-auth-tries", 6, "max public-key offers before disconnect")
 		maxPerIP     = flag.Int("max-per-ip", 10, "concurrent connections per remote IP (0 = unlimited)")
+		maxConns     = flag.Int("max-connections", 0, "global concurrent connections cap (0 = unlimited)")
 		shutdownGr   = flag.Duration("shutdown-grace", 10*time.Second, "on SIGTERM, wait this long for sessions to drain before killing them")
 		kaInterval   = flag.Duration("client-alive-interval", 0, "send keepalive every N if idle (0 disables)")
 		kaCount      = flag.Int("client-alive-count-max", 3, "disconnect after this many consecutive keepalive failures")
@@ -139,6 +140,7 @@ func run() error {
 		LoginGraceTime:      *loginGrace,
 		MaxAuthTries:        *maxAuth,
 		MaxConnectionsPerIP: *maxPerIP,
+		MaxConnections:      *maxConns,
 		ShutdownGrace:       *shutdownGr,
 		ClientAliveInterval: *kaInterval,
 		ClientAliveCountMax: *kaCount,

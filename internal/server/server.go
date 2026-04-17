@@ -79,6 +79,11 @@ type Config struct {
 	// remote IP. Zero means unlimited.
 	MaxConnectionsPerIP int
 
+	// MaxConnections caps concurrent connections globally, across
+	// all remotes. Zero means unlimited. Useful to bound total
+	// memory/fd usage against a distributed DoS.
+	MaxConnections int
+
 	// ShutdownGrace is the time existing sessions are given to drain
 	// after the outer context is cancelled. Zero means "no grace" —
 	// cancel immediately propagates to child processes (SIGKILL).
@@ -115,10 +120,11 @@ func StaticAuthorizedKeys(entries []authkeys.Entry) AuthorizedKeysFunc {
 
 // Server is an instance of gosshd.
 type Server struct {
-	cfg     Config
-	log     *slog.Logger
-	limiter *ipLimiter
-	audit   audit.Logger
+	cfg       Config
+	log       *slog.Logger
+	limiter   *ipLimiter
+	audit     audit.Logger
+	globalSem chan struct{} // bounded by MaxConnections; nil means unbounded
 }
 
 // New validates the config and returns a Server.
@@ -146,7 +152,17 @@ func New(cfg Config) (*Server, error) {
 	if a == nil {
 		a = audit.Nop
 	}
-	return &Server{cfg: cfg, log: log, limiter: newIPLimiter(cfg.MaxConnectionsPerIP), audit: a}, nil
+	var sem chan struct{}
+	if cfg.MaxConnections > 0 {
+		sem = make(chan struct{}, cfg.MaxConnections)
+	}
+	return &Server{
+		cfg:       cfg,
+		log:       log,
+		limiter:   newIPLimiter(cfg.MaxConnectionsPerIP),
+		audit:     a,
+		globalSem: sem,
+	}, nil
 }
 
 // ListenAndServe binds cfg.ListenAddr and serves until ctx is cancelled.
@@ -245,6 +261,24 @@ func (s *Server) handle(ctx context.Context, nc net.Conn) {
 		Type:   audit.TypeConnectionAccept,
 		Remote: remoteStr,
 	})
+
+	// Global concurrency cap. Non-blocking: if we're full, drop the
+	// connection rather than queueing, to apply back-pressure on the
+	// client. SSH clients retry on disconnect, which is fine.
+	if s.globalSem != nil {
+		select {
+		case s.globalSem <- struct{}{}:
+			defer func() { <-s.globalSem }()
+		default:
+			log.Warn("global connection cap reached; rejecting")
+			s.audit.Emit(audit.Event{
+				Type:   audit.TypeConnectionReject,
+				Remote: remoteStr,
+				Fields: map[string]interface{}{"reason": "global-cap"},
+			})
+			return
+		}
+	}
 
 	// Per-IP concurrency cap. We reject *after* accept (cannot stop
 	// the connect itself), but drop fast.
