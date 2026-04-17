@@ -378,6 +378,24 @@ func (s *Server) serverConfig(remoteStr string, log *slog.Logger) *ssh.ServerCon
 			})
 			return nil, errors.New("unauthorized")
 		}
+		// Enforce from="..." restriction if present on this key.
+		if len(entry.Options.From) > 0 {
+			var remoteIP net.IP
+			if tcp, ok := md.RemoteAddr().(*net.TCPAddr); ok {
+				remoteIP = tcp.IP
+			}
+			// We don't have a resolved hostname for the remote here;
+			// pattern matching falls back to IP-only for hostname
+			// patterns. That matches OpenSSH with UseDNS=no, which is
+			// the safer default.
+			if !authkeys.MatchFrom(entry.Options.From, remoteIP, "") {
+				s.audit.Emit(audit.Event{
+					Type: audit.TypeAuthFail, Remote: remoteStr, User: user,
+					Fields: map[string]interface{}{"reason": "from", "fp": fp, "from": entry.Options.From},
+				})
+				return nil, errors.New("unauthorized")
+			}
+		}
 		// Pass the option set through Permissions.Extensions so the
 		// session handler can enforce command=, permitopen=, etc.
 		perms := &ssh.Permissions{
@@ -546,14 +564,31 @@ func (s *Server) handleDirectTCPIP(ctx context.Context, conn *ssh.ServerConn, ne
 }
 
 // spliceChannel copies bytes in both directions between an SSH channel
-// and a net.Conn, closing both when either side finishes.
+// and a net.Conn. When one direction finishes (EOF or error), it
+// half-closes the other side's write half so the peer receives EOF.
+// If the peer keeps its end open despite receiving EOF (e.g., HTTP
+// keep-alive), the second copy goroutine may still block indefinitely;
+// callers must ensure the channel/conn is eventually fully closed —
+// which we do unconditionally below after at most a short grace.
 func spliceChannel(ch ssh.Channel, conn net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(2)
+	var once sync.Once
+	forceClose := func() {
+		once.Do(func() {
+			_ = ch.Close()
+			_ = conn.Close()
+		})
+	}
 	go func() {
 		defer wg.Done()
 		_, _ = io.Copy(ch, conn)
 		_ = ch.CloseWrite()
+		// If the peer takes too long to reciprocate, force close.
+		// This matches OpenSSH's behaviour: once one direction is
+		// done, don't keep the tunnel open forever waiting for the
+		// other.
+		time.AfterFunc(10*time.Second, forceClose)
 	}()
 	go func() {
 		defer wg.Done()
@@ -561,10 +596,10 @@ func spliceChannel(ch ssh.Channel, conn net.Conn) {
 		if cw, ok := conn.(interface{ CloseWrite() error }); ok {
 			_ = cw.CloseWrite()
 		}
+		time.AfterFunc(10*time.Second, forceClose)
 	}()
 	wg.Wait()
-	_ = ch.Close()
-	_ = conn.Close()
+	forceClose()
 }
 
 // handleSession drives a single session channel. It collects env and
@@ -712,8 +747,12 @@ func (st *sessionState) handleRequest(req *ssh.Request) {
 	ok := false
 	switch req.Type {
 	case "env":
+		// Cap the number of accepted env vars a client can set on a
+		// single session. OpenSSH enforces this via MaxSessions +
+		// MaxEnvs; we apply a simple hard limit.
+		const maxEnvVars = 64
 		name, value, perr := parseEnvRequest(req.Payload)
-		if perr == nil && isSafeEnvName(name) {
+		if perr == nil && isSafeEnvName(name) && len(st.env) < maxEnvVars {
 			st.env = append(st.env, [2]string{name, value})
 			ok = true
 		}

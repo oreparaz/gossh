@@ -216,12 +216,23 @@ func acceptLoop(l net.Listener, handle func(net.Conn)) {
 func splice(a, b net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(2)
+	var once sync.Once
+	forceClose := func() {
+		once.Do(func() {
+			_ = a.Close()
+			_ = b.Close()
+		})
+	}
 	go func() {
 		defer wg.Done()
 		_, _ = io.Copy(a, b)
 		if cw, ok := a.(interface{ CloseWrite() error }); ok {
 			_ = cw.CloseWrite()
 		}
+		// After one direction EOFs, force-close both sides if the
+		// peer doesn't reciprocate within a grace period. Matches
+		// spliceChannel on the server side.
+		time.AfterFunc(10*time.Second, forceClose)
 	}()
 	go func() {
 		defer wg.Done()
@@ -229,10 +240,10 @@ func splice(a, b net.Conn) {
 		if cw, ok := b.(interface{ CloseWrite() error }); ok {
 			_ = cw.CloseWrite()
 		}
+		time.AfterFunc(10*time.Second, forceClose)
 	}()
 	wg.Wait()
-	_ = a.Close()
-	_ = b.Close()
+	forceClose()
 }
 
 // --- SOCKS5 (RFC 1928) minimal server ---

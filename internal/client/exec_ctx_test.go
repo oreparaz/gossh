@@ -54,6 +54,43 @@ func TestExecContextCancelTerminatesRemote(t *testing.T) {
 	}
 }
 
+// TestManyRapidExecs issues many quick Execs on a single connection.
+// This is a regression guard for a race where the server closed the
+// channel before the exit-status request had flushed to the client,
+// leading to rare io.EOF instead of a proper exit code.
+func TestManyRapidExecs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	r := startGosshd(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c, err := client.Dial(ctx, client.Config{
+		Host: r.Host, Port: r.Port, User: "u",
+		IdentityFiles:  []string{r.UserKeyPath},
+		KnownHostsPath: r.KnownHosts,
+		HostCheckMode:  knownhosts.Strict,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	const N = 250
+	failures := 0
+	for i := 0; i < N; i++ {
+		var out bytes.Buffer
+		status, err := c.Exec("echo ok", nil, &out, io.Discard)
+		if err != nil || status != 0 || out.String() != "ok\n" {
+			failures++
+			t.Logf("iter %d: status=%d err=%v out=%q", i, status, err, out.String())
+		}
+	}
+	if failures > 0 {
+		t.Fatalf("%d/%d rapid Execs failed (regression: exit-status race)", failures, N)
+	}
+}
+
 // TestExecContextNoSignalLeak sanity-checks there is no goroutine leak
 // per Exec call. Before the fix the internal goroutine could stay
 // live forever if ctx was cancelled.

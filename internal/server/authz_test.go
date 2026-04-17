@@ -95,6 +95,31 @@ func buildCustomRig(t *testing.T, optionPrefix string) *testHarness {
 	}
 }
 
+func TestFromAllowAndDeny(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	// Allow only 127.0.0.1 — our ssh test connects from 127.0.0.1
+	// so this should succeed.
+	h := buildCustomRig(t, `from="127.0.0.1"`)
+	cmd := h.sshCmd(t, nil, "echo from-ok")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("from=127.0.0.1 should allow: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "from-ok") {
+		t.Fatalf("stdout=%q", out)
+	}
+
+	// Now restrict to a non-matching CIDR; ssh must be rejected.
+	h2 := buildCustomRig(t, `from="10.99.99.0/24"`)
+	cmd2 := h2.sshCmd(t, nil, "echo should-not-run")
+	out2, err2 := cmd2.CombinedOutput()
+	if err2 == nil {
+		t.Fatalf("from= should have blocked the connection but ssh exited 0: %s", out2)
+	}
+}
+
 func TestForcedCommand(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration")
