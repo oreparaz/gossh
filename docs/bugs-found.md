@@ -228,6 +228,23 @@ stderr at INFO level.
 **Fix:** downgrade to DEBUG. The audit log still records every
 `handshake.fail` event for security correlation.
 
+### 23. `sshd_config` silently accepted contradictory values
+
+Values like `PermitRootLogin=weird` were parsed without validation.
+
+**Fix:** validate the enum at gosshd startup; reject unsupported
+strings; warn on `yes` (gosshd doesn't map SSH users to uids, so
+it's advisory at best).
+
+## Fuzz round 2
+
+Second fuzz pass covering protocol-level paths (handshake,
+post-auth session requests, direct-tcpip channel payloads) and
+deeper data-parse paths (takeString, parsePTYReq, unquote,
+parseHostPort, parseCLine, readAck, MatchFrom, ParseServer,
+ResolveHost). ~25 minutes of cumulative fuzz time; two real
+panics found and fixed.
+
 ### 24. `scp.parseCLine` panic on empty string (found by fuzz)
 
 `parseCLine("")` did `line[1:]` without length check and indexed
@@ -250,15 +267,8 @@ Found by `FuzzAppend` after ~30s.
 
 Fuzzing surfaced that the 10s `net.Dialer` timeout was not
 configurable; under heavy channel churn this multiplies into
-long per-connection latency.
+long per-connection latency and pushes the fuzzer over its
+per-iteration budget.
 
 **Fix:** `Config.DirectTCPIPDialTimeout` field; tests (and any
 operator wanting a tighter bound) can override.
-
-### 23. `sshd_config` silently accepted contradictory values
-
-Values like `PermitRootLogin=weird` were parsed without validation.
-
-**Fix:** validate the enum at gosshd startup; reject unsupported
-strings; warn on `yes` (gosshd doesn't map SSH users to uids, so
-it's advisory at best).
