@@ -228,6 +228,18 @@ func (s *Server) handle(ctx context.Context, nc net.Conn) {
 	remoteStr := nc.RemoteAddr().String()
 	log := s.log.With("remote", remoteStr)
 	connectedAt := time.Now()
+	// Recover from panics inside this connection so a single bad
+	// session can't take down the whole server. An unrecovered
+	// panic in any goroutine terminates the process.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("panic in handle", "panic", fmt.Sprintf("%v", r))
+			s.audit.Emit(audit.Event{
+				Type: "server.panic", Remote: remoteStr,
+				Fields: map[string]interface{}{"panic": fmt.Sprintf("%v", r)},
+			})
+		}
+	}()
 
 	s.audit.Emit(audit.Event{
 		Type:   audit.TypeConnectionAccept,
@@ -640,6 +652,11 @@ func spliceChannel(ch ssh.Channel, conn net.Conn) {
 // pty-req state, then on exec/shell dispatches a runner goroutine and
 // pipes subsequent window-change/signal requests to it.
 func (s *Server) handleSession(ctx context.Context, conn *ssh.ServerConn, newCh ssh.NewChannel, log *slog.Logger) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("panic in handleSession", "panic", fmt.Sprintf("%v", r))
+		}
+	}()
 	ch, reqs, err := newCh.Accept()
 	if err != nil {
 		log.Warn("session accept failed", "err", err)
@@ -783,15 +800,19 @@ func (st *sessionState) handleRequest(req *ssh.Request) {
 	case "env":
 		// Cap the number of accepted env vars a client can set on a
 		// single session. OpenSSH enforces this via MaxSessions +
-		// MaxEnvs; we apply a simple hard limit.
+		// MaxEnvs; we apply a simple hard limit. Requests arriving
+		// AFTER exec/shell are rejected — accepting them would race
+		// with the runner goroutine reading st.env for finalEnv().
 		const maxEnvVars = 64
 		name, value, perr := parseEnvRequest(req.Payload)
-		if perr == nil && isSafeEnvName(name) && len(st.env) < maxEnvVars {
+		if perr == nil && isSafeEnvName(name) && len(st.env) < maxEnvVars && !st.started {
 			st.env = append(st.env, [2]string{name, value})
 			ok = true
 		}
 	case "pty-req":
-		if st.server.cfg.AllowPTY && !hasExt(st.conn, "no-pty") {
+		// pty-req must arrive before exec/shell; refusing after
+		// start avoids racing with the runner that reads st.ptyReq.
+		if st.server.cfg.AllowPTY && !hasExt(st.conn, "no-pty") && !st.started {
 			pr, perr := parsePTYReq(req.Payload)
 			if perr == nil {
 				st.ptyReq = &pr
