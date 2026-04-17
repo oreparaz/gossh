@@ -153,6 +153,13 @@ func (v *Verifier) Append(hostname string, remote net.Addr, key ssh.PublicKey) e
 
 // appendLocked is Append's body. Caller must hold v.mu.
 func (v *Verifier) appendLocked(hostname string, remote net.Addr, key ssh.PublicKey) error {
+	if remote == nil {
+		// x/crypto/ssh/knownhosts dereferences remote unconditionally
+		// in check(); synthesise a placeholder so we don't panic. The
+		// placeholder's contents don't matter — we use it only to
+		// probe whether this host/key is already known.
+		remote = placeholderAddr{}
+	}
 	// Re-check under lock: another goroutine may have added this host
 	// between the decision to append and now. Skip the write if so.
 	if v.cbk != nil {
@@ -207,6 +214,13 @@ func canonicalAddresses(hostname string, remote net.Addr) []string {
 	}
 	return out
 }
+
+// placeholderAddr stands in for a nil remote net.Addr when calling
+// into the stdlib knownhosts library, which doesn't tolerate nil.
+type placeholderAddr struct{}
+
+func (placeholderAddr) Network() string { return "tcp" }
+func (placeholderAddr) String() string  { return "0.0.0.0:0" }
 
 // IsHostKeyChanged reports whether err indicates an on-disk key
 // mismatch (possible MITM).

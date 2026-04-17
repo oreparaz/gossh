@@ -102,6 +102,10 @@ type Config struct {
 	ClientAliveInterval time.Duration
 	ClientAliveCountMax int
 
+	// DirectTCPIPDialTimeout bounds how long the server will wait
+	// when dialling the target of a -L tunnel. Zero → 10s.
+	DirectTCPIPDialTimeout time.Duration
+
 	// Logger receives structured log events. If nil, a discard
 	// handler is used.
 	Logger *slog.Logger
@@ -692,7 +696,11 @@ func (s *Server) handleDirectTCPIP(ctx context.Context, conn *ssh.ServerConn, ne
 		_ = newCh.Reject(ssh.Prohibited, "target not in permitopen")
 		return
 	}
-	d := net.Dialer{Timeout: 10 * time.Second}
+	dialTimeout := s.cfg.DirectTCPIPDialTimeout
+	if dialTimeout == 0 {
+		dialTimeout = 10 * time.Second
+	}
+	d := net.Dialer{Timeout: dialTimeout}
 	tcpConn, err := d.DialContext(ctx, "tcp", target)
 	if err != nil {
 		log.Info("direct-tcpip dial failed", "target", target, "err", err)
