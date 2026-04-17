@@ -156,6 +156,71 @@ func TestAuditLogRecordsFullConnection(t *testing.T) {
 	}
 }
 
+// TestAuditLogRecordsFromReject verifies that a key rejected via the
+// from= restriction produces an auth.fail event with reason=from.
+func TestAuditLogRecordsFromReject(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	dir := t.TempDir()
+	hk, _ := hostkey.LoadOrGenerate(filepath.Join(dir, "h"), hostkey.Ed25519, 0, "h")
+	userPath := filepath.Join(dir, "u")
+	hostkey.LoadOrGenerate(userPath, hostkey.Ed25519, 0, "u")
+	pub, _ := os.ReadFile(userPath + ".pub")
+	ak := filepath.Join(dir, "ak")
+	// Restrict the key to a CIDR our test client's 127.0.0.1 is NOT in.
+	line := []byte(`from="10.99.99.0/24" ` + string(pub))
+	os.WriteFile(ak, line, 0o600)
+	entries, err := authkeys.ParseFile(ak)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	l, _ := net.Listen("tcp", "127.0.0.1:0")
+	_, portStr, _ := net.SplitHostPort(l.Addr().String())
+	port := atoi(portStr)
+
+	auditBuf := &syncBuf{}
+	auditLog := &audit.JSONLogger{Writer: auditBuf}
+	s, _ := server.New(server.Config{
+		HostKeys:       []ssh.Signer{hk.Signer},
+		AuthorizedKeys: server.StaticAuthorizedKeys(entries),
+		Shell:          "/bin/bash",
+		AllowExec:      true,
+		Audit:          auditLog,
+		MaxAuthTries:   1,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); _ = s.Serve(ctx, l) }()
+	t.Cleanup(func() { cancel(); <-done })
+	time.Sleep(50 * time.Millisecond)
+
+	kh := filepath.Join(dir, "kh")
+	os.WriteFile(kh, []byte(fmt.Sprintf("[127.0.0.1]:%s %s", portStr, ssh.MarshalAuthorizedKey(hk.Signer.PublicKey()))), 0o600)
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel2()
+	_, dialErr := client.Dial(ctx2, client.Config{
+		Host: "127.0.0.1", Port: port, User: "u",
+		IdentityFiles:  []string{userPath},
+		KnownHostsPath: kh,
+		HostCheckMode:  knownhosts.Strict,
+	})
+	if dialErr == nil {
+		t.Fatal("expected from= to deny the connection")
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	log := auditBuf.String()
+	if !strings.Contains(log, `"auth.fail"`) {
+		t.Fatalf("audit log missing auth.fail:\n%s", log)
+	}
+	if !strings.Contains(log, `"reason":"from"`) {
+		t.Fatalf("audit log missing reason=from:\n%s", log)
+	}
+}
+
 // TestAuditLogRecordsSignalAndForward goes wider: sends an
 // interactive-ish sequence with a direct-tcpip open and a signal
 // and checks the audit log contains the corresponding events.
