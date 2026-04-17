@@ -165,3 +165,73 @@ the server.
 re-parses when mtime changes. CLI flag
 `-reload-authorized-keys` (on by default). Test
 `TestReloadingAuthorizedKeysRevocationE2E`.
+
+### 16. TOCTOU between perm check and file open
+
+The stat-then-open pattern let an attacker who controls the
+directory race between the two calls to swap in a world-readable
+file. We'd believe the stat'd perms and read the swapped file.
+
+**Fix:** `os.Open` first, then `f.Stat()` (fstat on the open fd).
+Applied in `authkeys.ParseFile` and `hostkey.Load`.
+
+### 17. `remoteForwards.add` races with `closeAll`
+
+A tcpip-forward arriving just before connection shutdown could
+install its listener AFTER `closeAll` had already iterated and
+emptied the map, leaking the listener past connection close.
+
+**Fix:** latch a `closed` flag in `remoteForwards`; `add` checks it
+and closes the new listener without adding.
+
+### 18. `forward.{Local,Remote,Dynamic}` ignored their ctx
+
+Accept loops only stopped when the caller explicitly invoked the
+returned `stop()` func. Cancelling the enclosing context left
+listeners up.
+
+**Fix:** a watch goroutine closes the listener on `ctx.Done` and
+exits on `stop()`.
+
+### 19. `spliceChannel` half-close could hang forever
+
+When one direction EOFs and the peer keeps its end open, the
+other copy blocked indefinitely.
+
+**Fix:** 10s force-close timer scheduled when the first copy ends
+(also in the client's `splice`).
+
+### 20. No TCP keepalive on accepted connections
+
+Half-dead TCPs (crashed peer, NATs that dropped state) accumulate
+until `ClientAliveInterval` fires — and that feature is opt-in.
+Without either, a stuck connection lives forever.
+
+**Fix:** `SetKeepAlive(true)` + `SetKeepAlivePeriod(30s)` on each
+accepted `*net.TCPConn` in `handle`.
+
+### 21. SCP path traversal (CVE-2019-6111 class)
+
+A malicious *server* responding to an SCP download could include
+filenames like `../../etc/passwd` in its C-line and trick the
+client into writing outside the intended directory.
+
+**Fix:** the `scp` package's `parseCLine` rejects names containing
+`/`, `\x00`, or the pseudo-entries `.`/`..`. Also refuses setuid
+/ setgid / sticky modes in the C-line.
+
+### 22. Handshake-failure log spam
+
+Port scanners triggering handshake failures filled operators'
+stderr at INFO level.
+
+**Fix:** downgrade to DEBUG. The audit log still records every
+`handshake.fail` event for security correlation.
+
+### 23. `sshd_config` silently accepted contradictory values
+
+Values like `PermitRootLogin=weird` were parsed without validation.
+
+**Fix:** validate the enum at gosshd startup; reject unsupported
+strings; warn on `yes` (gosshd doesn't map SSH users to uids, so
+it's advisory at best).
