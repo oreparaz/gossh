@@ -346,7 +346,11 @@ func (s *Server) handle(ctx context.Context, nc net.Conn) {
 
 	conn, chans, reqs, err := ssh.NewServerConn(nc, sshCfg)
 	if err != nil {
-		log.Info("handshake failed", "err", err)
+		// Handshake failures are routine noise from port scanners and
+		// half-broken clients. Log at DEBUG so a scanner can't fill
+		// the operator's stderr; operators who want every attempt
+		// should use the audit log instead.
+		log.Debug("handshake failed", "err", err)
 		s.audit.Emit(audit.Event{
 			Type:   audit.TypeHandshakeFail,
 			Remote: remoteStr,

@@ -153,8 +153,9 @@ func Local(ctx context.Context, client *ssh.Client, spec Spec, log *slog.Logger)
 		}
 		splice(c, rc)
 	})
-	_ = ctx
-	return func() { _ = l.Close() }, nil
+	stopped := make(chan struct{})
+	go watchCtx(ctx, l, stopped)
+	return func() { close(stopped); _ = l.Close() }, nil
 }
 
 // Remote asks the server to bind a listener and forwards inbound
@@ -180,8 +181,9 @@ func Remote(ctx context.Context, client *ssh.Client, spec Spec, log *slog.Logger
 		}
 		splice(c, lc)
 	})
-	_ = ctx
-	return func() { _ = l.Close() }, nil
+	stopped := make(chan struct{})
+	go watchCtx(ctx, l, stopped)
+	return func() { close(stopped); _ = l.Close() }, nil
 }
 
 // Dynamic starts a local SOCKS5 proxy (no auth, CONNECT only) whose
@@ -198,8 +200,20 @@ func Dynamic(ctx context.Context, client *ssh.Client, spec Spec, log *slog.Logge
 	}
 	log.Info("-D SOCKS5 listening", "bind", l.Addr())
 	go acceptLoop(l, func(c net.Conn) { handleSOCKS(c, client, log) })
-	_ = ctx
-	return func() { _ = l.Close() }, nil
+	stopped := make(chan struct{})
+	go watchCtx(ctx, l, stopped)
+	return func() { close(stopped); _ = l.Close() }, nil
+}
+
+// watchCtx closes l when ctx is done or when stopped is closed. It
+// exits either way, so the goroutine cannot leak when the caller
+// explicitly invokes the stop function returned by Local/Remote/Dynamic.
+func watchCtx(ctx context.Context, l net.Listener, stopped <-chan struct{}) {
+	select {
+	case <-ctx.Done():
+		_ = l.Close()
+	case <-stopped:
+	}
 }
 
 func acceptLoop(l net.Listener, handle func(net.Conn)) {
