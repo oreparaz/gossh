@@ -81,8 +81,6 @@ the automated check.
 
 ## Client hardening
 
-## Client hardening
-
 - **Strict host-key checking by default.** `-strict-host-key yes`
   refuses unknown hosts. `accept-new` is TOFU.
   The host-key file is locked with 0600 perms on creation.
@@ -90,6 +88,16 @@ the automated check.
   overwrite.
 - **Identity files** are rejected if loose perms (>0600) are set,
   mirroring the server-side check.
+- **TOCTOU-safe permission checks.** `authkeys.ParseFile` and
+  `hostkey.Load` open the file first and then `fstat` the fd, so
+  a race between stat and open cannot swap in a world-readable
+  file.
+- **Size-capped key reads.** `hostkey.Load` limits the file to
+  1 MiB; a symlink-to-`/dev/zero` can't exhaust memory.
+- **SCP client path-traversal guard.** On download, the remote's
+  C-line filename is rejected if it contains `/`, `\x00`, `.`,
+  or `..`; setuid/setgid/sticky modes are also refused
+  (closes the CVE-2019-6111 class).
 
 ## Things we intentionally *do not* support
 
@@ -102,7 +110,9 @@ justify for the 80%-of-OpenSSH goal:
   agent for the lifetime of the connection. Too easy to misuse.
 - X11 forwarding.
 - GSSAPI / Kerberos.
-- SFTP / SCP subsystem.
+- SFTP subsystem.
+- SCP **recursion** (directory trees); single-file SCP is
+  supported via `gossh-scp` / exec.
 - `ssh-rsa` signatures with SHA-1.
 - AES-CBC and HMAC-SHA1.
 
