@@ -7,7 +7,7 @@ LDFLAGS := -s -w
 
 all: build test
 
-build: build-server build-client build-keygen
+build: build-server build-client build-keygen build-scp
 
 build-server:
 	@mkdir -p $(BIN_DIR)
@@ -20,6 +20,10 @@ build-client:
 build-keygen:
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/gossh-keygen ./cmd/gossh-keygen
+
+build-scp:
+	@mkdir -p $(BIN_DIR)
+	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/gossh-scp ./cmd/gossh-scp
 
 test:
 	$(GO) test -race -timeout 120s ./...

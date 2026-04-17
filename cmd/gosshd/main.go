@@ -88,6 +88,15 @@ func run() error {
 		if sc.PasswordAuthentication {
 			return errors.New("sshd_config: PasswordAuthentication yes is not supported; remove it to proceed")
 		}
+		switch strings.ToLower(sc.PermitRootLogin) {
+		case "", "no", "prohibit-password":
+			// OK: prohibit-password is equivalent to our pubkey-only posture.
+		case "yes":
+			// Allowed, but surface a warning on stderr (log isn't set up yet).
+			fmt.Fprintln(os.Stderr, "gosshd: warning: PermitRootLogin yes is advisory — gosshd does not map SSH users to system uids")
+		default:
+			return fmt.Errorf("sshd_config: unsupported PermitRootLogin %q", sc.PermitRootLogin)
+		}
 	}
 
 	if *authKeysPath == "" {

@@ -280,6 +280,12 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 
 func (s *Server) handle(ctx context.Context, nc net.Conn) {
 	defer nc.Close()
+	// Enable TCP keepalive so silent half-dead peers eventually get
+	// reaped by the kernel even when ClientAliveInterval is off.
+	if tc, ok := nc.(*net.TCPConn); ok {
+		_ = tc.SetKeepAlive(true)
+		_ = tc.SetKeepAlivePeriod(30 * time.Second)
+	}
 	remoteStr := nc.RemoteAddr().String()
 	log := s.log.With("remote", remoteStr)
 	connectedAt := time.Now()
