@@ -117,10 +117,41 @@ type Config struct {
 type AuthorizedKeysFunc func(user string) ([]authkeys.Entry, error)
 
 // StaticAuthorizedKeys is a trivial AuthorizedKeysFunc that returns
-// the same set of entries for every user.
+// the same set of entries for every user. Entries are captured at
+// call time and never reloaded.
 func StaticAuthorizedKeys(entries []authkeys.Entry) AuthorizedKeysFunc {
 	cp := append([]authkeys.Entry(nil), entries...)
 	return func(string) ([]authkeys.Entry, error) { return cp, nil }
+}
+
+// ReloadingAuthorizedKeys reads the file at path on each auth attempt
+// when its mtime has changed since the last read. This means a key
+// revocation takes effect on the very next login attempt, matching
+// OpenSSH's default behaviour. Stats the file on every call (cheap);
+// parses only on change.
+func ReloadingAuthorizedKeys(path string) AuthorizedKeysFunc {
+	var (
+		mu       sync.Mutex
+		cache    []authkeys.Entry
+		cachedMT time.Time
+	)
+	return func(string) ([]authkeys.Entry, error) {
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, err
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if !info.ModTime().Equal(cachedMT) {
+			entries, err := authkeys.ParseFile(path)
+			if err != nil {
+				return nil, err
+			}
+			cache = entries
+			cachedMT = info.ModTime()
+		}
+		return cache, nil
+	}
 }
 
 // Server is an instance of gosshd.
