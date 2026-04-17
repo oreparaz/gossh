@@ -280,6 +280,20 @@ func (s *Server) handle(ctx context.Context, nc net.Conn) {
 	log = log.With("user", conn.User(), "client", string(conn.ClientVersion()))
 	log.Info("connected")
 
+	// When the shutdown context (ctx) is cancelled — for example
+	// because ShutdownGrace expired — close the SSH connection so
+	// every in-flight session, forward, and splice returns. The
+	// goroutine also exits when the connection closes normally.
+	handleReturned := make(chan struct{})
+	defer close(handleReturned)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-handleReturned:
+		}
+	}()
+
 	// Per-connection -R forwards registry. Closed when handle returns.
 	fwd := newRemoteForwards()
 	defer fwd.closeAll()
