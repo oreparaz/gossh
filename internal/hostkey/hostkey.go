@@ -13,6 +13,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -129,15 +130,24 @@ func (kp *KeyPair) Save(path string) error {
 
 // Load reads a private key file (and public, if present) from disk.
 // It refuses keys that are world- or group-readable: SSH will, too.
+//
+// The permission check uses the opened file descriptor (fstat) to
+// close a TOCTOU where an attacker swaps in a world-readable file
+// between stat and open.
 func Load(path string) (*KeyPair, error) {
-	info, err := os.Stat(path)
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
 	if err != nil {
 		return nil, err
 	}
 	if mode := info.Mode().Perm(); mode&0o077 != 0 {
 		return nil, fmt.Errorf("permissions %#o on %s are too open (want 0600)", mode, path)
 	}
-	buf, err := os.ReadFile(path)
+	buf, err := io.ReadAll(f)
 	if err != nil {
 		return nil, err
 	}

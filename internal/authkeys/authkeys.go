@@ -110,20 +110,22 @@ func Parse(r io.Reader) ([]Entry, error) {
 }
 
 // ParseFile reads the file at path. It enforces the OpenSSH rule that
-// the file must not be group- or world-writable.
+// the file must not be group- or world-writable. The check uses the
+// opened file descriptor (fstat) to close a TOCTOU race where an
+// attacker races between stat and open to swap in a different file.
 func ParseFile(path string) ([]Entry, error) {
-	info, err := os.Stat(path)
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
 	if err != nil {
 		return nil, err
 	}
 	if mode := info.Mode().Perm(); mode&0o022 != 0 {
 		return nil, fmt.Errorf("authorized_keys %s is group/world writable (%#o)", path, mode)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
 	return Parse(f)
 }
 
