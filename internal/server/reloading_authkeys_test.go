@@ -1,6 +1,10 @@
 package server_test
 
 import (
+	"bytes"
+	"context"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,4 +88,68 @@ func TestReloadingAuthorizedKeysRefusesMalformed(t *testing.T) {
 	}
 	// Silence unused ssh import.
 	_ = ssh.Password
+}
+
+// TestReloadingAuthorizedKeysRevocationE2E boots gosshd with the
+// reloading AK function and verifies that removing the key from the
+// file mid-run rejects the next connection. This is the realistic
+// deployment scenario — admin revokes a key, expects it to take
+// effect immediately.
+func TestReloadingAuthorizedKeysRevocationE2E(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	dir := t.TempDir()
+	hk, _ := hostkey.LoadOrGenerate(filepath.Join(dir, "h"), hostkey.Ed25519, 0, "h")
+	userPath := filepath.Join(dir, "u")
+	hostkey.LoadOrGenerate(userPath, hostkey.Ed25519, 0, "u")
+	pub, _ := os.ReadFile(userPath + ".pub")
+	ak := filepath.Join(dir, "ak")
+	if err := os.WriteFile(ak, pub, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	l, _ := net.Listen("tcp", "127.0.0.1:0")
+	_, portStr, _ := net.SplitHostPort(l.Addr().String())
+
+	s, _ := server.New(server.Config{
+		HostKeys:       []ssh.Signer{hk.Signer},
+		AuthorizedKeys: server.ReloadingAuthorizedKeys(ak),
+		Shell:          "/bin/bash",
+		AllowExec:      true,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); _ = s.Serve(ctx, l) }()
+	t.Cleanup(func() { cancel(); <-done })
+	time.Sleep(50 * time.Millisecond)
+
+	kh := filepath.Join(dir, "kh")
+	os.WriteFile(kh, []byte(fmt.Sprintf("[127.0.0.1]:%s %s", portStr, ssh.MarshalAuthorizedKey(hk.Signer.PublicKey()))), 0o600)
+
+	h := &testHarness{Host: "127.0.0.1", Port: portStr, KnownHosts: kh, UserKeyPath: userPath}
+
+	// First attempt: should succeed.
+	var out1, err1 bytes.Buffer
+	cmd1 := h.sshCmd(t, nil, "echo pre-revoke")
+	cmd1.Stdout = &out1
+	cmd1.Stderr = &err1
+	if err := cmd1.Run(); err != nil {
+		t.Fatalf("first ssh: %v\n%s", err, err1.String())
+	}
+	if !strings.Contains(out1.String(), "pre-revoke") {
+		t.Fatalf("stdout=%q", out1.String())
+	}
+
+	// Revoke the key.
+	time.Sleep(20 * time.Millisecond)
+	if err := os.WriteFile(ak, []byte{}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second attempt: must fail.
+	cmd2 := h.sshCmd(t, nil, "echo post-revoke")
+	if err := cmd2.Run(); err == nil {
+		t.Fatalf("expected ssh to fail after revocation")
+	}
 }
