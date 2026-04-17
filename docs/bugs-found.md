@@ -272,3 +272,91 @@ per-iteration budget.
 
 **Fix:** `Config.DirectTCPIPDialTimeout` field; tests (and any
 operator wanting a tighter bound) can override.
+
+## External review (2026-04-17)
+
+Eight findings from `docs/security-correctness-audit-2026-04-17.txt`.
+All reproduced; each fix has a regression test.
+
+### 27. CLI default was TOFU, contradicting SECURITY.md (audit #1)
+
+`gossh` and `gossh-scp` defaulted `-strict-host-key` to
+`accept-new`, but the documentation claimed strict was the
+default. A network attacker could impersonate on first contact
+and permanently seed a key.
+
+**Fix:** changed the default to `yes` (strict) in both CLIs;
+updated README, SECURITY.md, and docs/configuration.md.
+
+### 28. `client.Dial` handshake unbounded (audit #2)
+
+`ssh.NewClientConn` was called on the raw socket with no
+deadline; a server that accepts TCP and then stalls could hang
+callers forever even with `ConnectTimeout` set.
+
+**Fix:** set a deadline on `nc` covering the full handshake;
+spawn a ctx watcher that closes the socket on cancel; clear the
+deadline after success. Tests `TestDialBoundsHandshake` and
+`TestDialCtxCancelDuringHandshake`.
+
+### 29. `-R 0:...` lifecycle broken (audit #3)
+
+The server stored the listener under the *requested* port
+(`0`) while `x/crypto/ssh` sends the *assigned* port in
+`cancel-tcpip-forward`. Cancellation silently failed and two
+concurrent `-R 0:...` requests collided on the same `host:0`
+key.
+
+**Fix:** key the registry by the actual bound port returned by
+`net.Listen`. Test `TestRemoteForwardPort0Cancel`.
+
+### 30. `forwarded-tcpip` bypassed `MaxChannelsPerConn` (audit #4)
+
+The cap was only enforced on inbound channel-opens (`session`,
+`direct-tcpip`). Server-initiated `forwarded-tcpip` channels
+created by inbound `-R` traffic were uncapped — a flood could
+defeat the advertised limit.
+
+**Fix:** share the per-connection semaphore with
+`acceptRemoteForward`; non-blocking reservation drops overflow.
+Test `TestForwardedTCPIPRespectsChannelCap`.
+
+### 31. SCP traversal guard was POSIX-only (audit #5)
+
+`parseCLine` rejected `/` and NUL but not `\`, drive-letter
+prefixes (`C:evil`), or UNC-style names. A Windows gossh-scp
+client could still be tricked into writing outside the
+destination directory by a malicious server.
+
+**Fix:** new `validateSCPFilename` rejects `\`, drive-letter
+prefixes, empty / oversized names, and both dot pseudo-entries.
+Tests cover `..\evil`, `a\b`, `C:evil`, `c:`, `Z:\path`.
+
+### 32. Audit-log failures silently swallowed (audit #6)
+
+`audit.JSONLogger.Emit` ignored both `Write` and `Sync` errors,
+defeating the durability promise under disk-full / permission /
+NFS conditions.
+
+**Fix:** added a `Failures()` counter, `OnError` per-failure
+callback, and a `FailClosed` one-shot. `gosshd` wires `OnError`
+to emit each failure via the main `slog` logger. Test
+`TestJSONLoggerSurfacesWriteFailures`.
+
+### 33. `Client.Shell()` SIGWINCH goroutine leak (audit #7)
+
+`for range winch` never exited because `signal.Stop` does not
+close the channel. Long-lived callers accumulated goroutines.
+
+**Fix:** added a `winchDone` channel; the goroutine `select`s
+on both and returns on shell exit.
+
+### 34. `ssh_config` inline comments not stripped (audit #8)
+
+`Port 2222 # comment` was parsed with the comment inside the
+value. Numeric fields failed loudly; string fields silently
+produced garbage.
+
+**Fix:** rewrote `stripComment` to scan for an unquoted `#`,
+honouring double quotes and `\"` escapes. Tests added for
+both `ParseClient` and `ParseServer`.
