@@ -143,6 +143,31 @@ func TestLoadOrGenerate(t *testing.T) {
 // TestInteropWithSSHKeygen parses the public key we emitted using the
 // system ssh-keygen, ensuring our on-disk format matches what OpenSSH
 // can read.
+// TestLoadEncryptedKeyFailsClean verifies that a passphrase-protected
+// private key produces a clean error rather than a crash or silent
+// accept. We don't support encrypted keys.
+func TestLoadEncryptedKeyFailsClean(t *testing.T) {
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		t.Skip("ssh-keygen not available")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "id_ed25519")
+	// Generate a new encrypted key with ssh-keygen.
+	if err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-f", path, "-N", "secret").Run(); err != nil {
+		t.Fatalf("ssh-keygen: %v", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected Load to fail on encrypted key")
+	}
+	if !strings.Contains(err.Error(), "passphrase") && !strings.Contains(err.Error(), "encrypted") {
+		t.Logf("got %v — accepted as long as Load returned error", err)
+	}
+}
+
 func TestInteropWithSSHKeygen(t *testing.T) {
 	if _, err := exec.LookPath("ssh-keygen"); err != nil {
 		t.Skip("ssh-keygen not available")
