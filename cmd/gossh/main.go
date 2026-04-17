@@ -53,7 +53,7 @@ func run() (int, error) {
 		forceTTY      = flag.Bool("t", false, "force PTY allocation")
 		disableTTY    = flag.Bool("T", false, "disable PTY allocation")
 		noCommand     = flag.Bool("N", false, "do not execute a remote command (useful for forwarding)")
-		strict        = flag.String("strict-host-key", "yes", "yes (refuse unknown hosts, the safe default), accept-new (TOFU), no (disable entirely)")
+		strict        = flag.String("strict-host-key", "yes", "yes (default, refuse unknown) | accept-new (TOFU)")
 		knownHostsArg = flag.String("known-hosts", "", "override known_hosts path")
 		configPath    = flag.String("F", "", "path to ssh_config (values override defaults, CLI overrides file)")
 	)
@@ -263,12 +263,10 @@ func explicitStrict(p *string) bool {
 
 func parseStrict(v string) (knownhosts.Mode, error) {
 	switch v {
-	case "yes", "ask", "strict":
+	case "yes", "ask", "strict", "":
 		return knownhosts.Strict, nil
-	case "accept-new", "":
+	case "accept-new":
 		return knownhosts.AcceptNew, nil
-	case "no", "off":
-		return knownhosts.Off, nil
 	default:
 		return 0, fmt.Errorf("unknown strict-host-key %q", v)
 	}

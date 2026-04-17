@@ -52,7 +52,7 @@ func TestDialBoundsHandshake(t *testing.T) {
 		Port:           port,
 		User:           "u",
 		IdentityFiles:  []string{userKey},
-		HostCheckMode:  knownhosts.Off,
+		HostCheckMode:  knownhosts.TOFU,
 		ConnectTimeout: 1 * time.Second,
 	})
 	elapsed := time.Since(start)
@@ -99,7 +99,7 @@ func TestDialCtxCancelDuringHandshake(t *testing.T) {
 		Port:           port,
 		User:           "u",
 		IdentityFiles:  []string{userKey},
-		HostCheckMode:  knownhosts.Off,
+		HostCheckMode:  knownhosts.TOFU,
 		ConnectTimeout: 60 * time.Second,
 	})
 	elapsed := time.Since(start)

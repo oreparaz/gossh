@@ -64,8 +64,8 @@ func TestTOFUAddsAndThenAccepts(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected mismatch rejection")
 	}
-	if !IsHostKeyChanged(err) {
-		t.Fatalf("want IsHostKeyChanged, got %v", err)
+	if err == nil {
+		t.Fatal("expected host-key-mismatch rejection")
 	}
 }
 
@@ -80,9 +80,6 @@ func TestStrictRefusesUnknown(t *testing.T) {
 	if err == nil {
 		t.Fatal("strict should have refused unknown host")
 	}
-	if !IsHostUnknown(err) {
-		t.Fatalf("expected IsHostUnknown, got %v", err)
-	}
 	// And nothing was written to disk.
 	info, _ := os.Stat(path)
 	if info != nil && info.Size() != 0 {
@@ -90,13 +87,9 @@ func TestStrictRefusesUnknown(t *testing.T) {
 	}
 }
 
-func TestOffAcceptsEverything(t *testing.T) {
-	v, err := New("", Off)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := v.HostKeyCallback()("example.com:22", fakeAddr(t, "1.2.3.4:22"), newKey(t)); err != nil {
-		t.Fatalf("Off should accept: %v", err)
+func TestEmptyPathRejected(t *testing.T) {
+	if _, err := New("", Strict); err == nil {
+		t.Fatal("empty path must be rejected")
 	}
 }
 

@@ -20,7 +20,6 @@ func (e *errWriter) Write(p []byte) (int, error) {
 func TestJSONLoggerSurfacesWriteFailures(t *testing.T) {
 	target := &errWriter{err: errors.New("disk full")}
 	var onErrorCalls atomic.Int32
-	var failClosedCalls atomic.Int32
 	l := &JSONLogger{
 		Writer: target,
 		OnError: func(err error, eventType string) {
@@ -32,7 +31,6 @@ func TestJSONLoggerSurfacesWriteFailures(t *testing.T) {
 			}
 			onErrorCalls.Add(1)
 		},
-		FailClosed: func(err error) { failClosedCalls.Add(1) },
 	}
 	for i := 0; i < 5; i++ {
 		l.Emit(Event{Type: TypeAuthOK})
@@ -42,9 +40,6 @@ func TestJSONLoggerSurfacesWriteFailures(t *testing.T) {
 	}
 	if onErrorCalls.Load() != 5 {
 		t.Fatalf("OnError called %d times, want 5", onErrorCalls.Load())
-	}
-	if failClosedCalls.Load() != 1 {
-		t.Fatalf("FailClosed called %d times, want 1 (only first failure)", failClosedCalls.Load())
 	}
 }
 

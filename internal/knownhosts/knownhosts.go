@@ -16,33 +16,30 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 
 	"golang.org/x/crypto/ssh"
 	xkh "golang.org/x/crypto/ssh/knownhosts"
 )
 
-// Mode controls how unknown hosts are handled.
+// Mode controls how unknown hosts are handled. There is no "off"
+// mode: disabling host-key verification at runtime is a MITM foot-
+// gun with no legitimate use.
 type Mode int
 
 const (
 	// Strict refuses connections whose host key is not already
-	// recorded. This is the only safe default for production.
+	// recorded. This is the default.
 	Strict Mode = iota
 
 	// TOFU accepts the first host key presented and records it. On
-	// subsequent connects it behaves like Strict.
+	// subsequent connects it behaves like Strict. Synonym for
+	// OpenSSH's StrictHostKeyChecking=accept-new.
 	TOFU
 
-	// AcceptNew is a synonym for TOFU; it matches OpenSSH's
-	// StrictHostKeyChecking=accept-new.
+	// AcceptNew is a synonym for TOFU; kept as a name that matches
+	// OpenSSH terminology in docs.
 	AcceptNew
-
-	// Off skips host-key verification entirely. It is never the right
-	// setting outside of scratch tests. Opting into it requires passing
-	// this enum explicitly.
-	Off
 )
 
 // Verifier is reused for the lifetime of a client; it is safe for
@@ -59,8 +56,8 @@ type Verifier struct {
 // The file does not need to exist; it will be created on first append.
 // Parent directories are created with 0700.
 func New(path string, mode Mode) (*Verifier, error) {
-	if path == "" && mode != Off {
-		return nil, errors.New("known_hosts path required unless mode is Off")
+	if path == "" {
+		return nil, errors.New("known_hosts path required")
 	}
 	v := &Verifier{path: path, mode: mode}
 	if err := v.reload(); err != nil {
@@ -70,10 +67,6 @@ func New(path string, mode Mode) (*Verifier, error) {
 }
 
 func (v *Verifier) reload() error {
-	if v.mode == Off {
-		v.cbk = ssh.InsecureIgnoreHostKey() //nolint:gosec
-		return nil
-	}
 	// Ensure the file exists so xkh.New does not error on a missing path.
 	if _, err := os.Stat(v.path); errors.Is(err, fs.ErrNotExist) {
 		if err := os.MkdirAll(filepath.Dir(v.path), 0o700); err != nil {
@@ -135,8 +128,6 @@ func (v *Verifier) verifyLocked(hostname string, remote net.Addr, key ssh.Public
 		if appendErr := v.appendLocked(hostname, remote, key); appendErr != nil {
 			return fmt.Errorf("TOFU append: %w", appendErr)
 		}
-		return nil
-	case Off:
 		return nil
 	}
 	return err
@@ -206,12 +197,6 @@ func canonicalAddresses(hostname string, remote net.Addr) []string {
 	if remote != nil {
 		add(remote.String())
 	}
-	// Strip any bracketed form down to host alone when the port is 22.
-	// This keeps the file compact.
-	if len(out) > 1 {
-		// nothing to do — ssh/knownhosts.Line handles bracketing.
-		_ = strings.Join
-	}
 	return out
 }
 
@@ -221,17 +206,3 @@ type placeholderAddr struct{}
 
 func (placeholderAddr) Network() string { return "tcp" }
 func (placeholderAddr) String() string  { return "0.0.0.0:0" }
-
-// IsHostKeyChanged reports whether err indicates an on-disk key
-// mismatch (possible MITM).
-func IsHostKeyChanged(err error) bool {
-	var kerr *xkh.KeyError
-	return errors.As(err, &kerr) && len(kerr.Want) > 0
-}
-
-// IsHostUnknown reports whether err indicates the host was not present
-// in the known_hosts file.
-func IsHostUnknown(err error) bool {
-	var kerr *xkh.KeyError
-	return errors.As(err, &kerr) && len(kerr.Want) == 0
-}

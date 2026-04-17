@@ -46,7 +46,7 @@ func run() error {
 		port          = flag.Int("p", 22, "remote port")
 		login         = flag.String("l", "", "remote username (overrides user@host)")
 		identities    multiFlag
-		strictArg     = flag.String("strict-host-key", "yes", "yes (default, refuse unknown) | accept-new (TOFU) | no (disable)")
+		strictArg     = flag.String("strict-host-key", "yes", "yes (default, refuse unknown) | accept-new (TOFU)")
 		knownHostsArg = flag.String("known-hosts", "", "override known_hosts path")
 		connTimeout   = flag.Duration("connect-timeout", 10*time.Second, "")
 	)
@@ -187,12 +187,10 @@ func parseTarget(s string, defPort int) (user, host string, port int, err error)
 
 func parseStrict(v string) (knownhosts.Mode, error) {
 	switch v {
-	case "yes", "ask", "strict":
+	case "yes", "ask", "strict", "":
 		return knownhosts.Strict, nil
-	case "accept-new", "":
+	case "accept-new":
 		return knownhosts.AcceptNew, nil
-	case "no", "off":
-		return knownhosts.Off, nil
 	default:
 		return 0, fmt.Errorf("unknown strict-host-key %q", v)
 	}

@@ -62,16 +62,13 @@ type Options struct {
 	// permissions unless another option re-enables them.
 	Restrict bool
 
-	// Individual "no-*" toggles.
-	NoPortForwarding  bool
-	NoX11Forwarding   bool
-	NoAgentForwarding bool
-	NoPTY             bool
-	NoUserRC          bool
-
-	// Raw is the verbatim option string (before key type). Useful
-	// for diagnostics.
-	Raw string
+	// Individual "no-*" toggles that the server actually enforces.
+	// X11, agent forwarding, and user-rc are not supported at all,
+	// so their "no-*" keywords parse but have no stored bool —
+	// nothing can weaken a restriction we don't offer in the first
+	// place.
+	NoPortForwarding bool
+	NoPTY            bool
 }
 
 // Parse reads an authorized_keys stream and returns its entries.
@@ -162,7 +159,6 @@ var knownOptions = map[string]bool{
 // into a structured Options value.
 func parseOptions(raw []string) (Options, error) {
 	var opts Options
-	opts.Raw = strings.Join(raw, ",")
 	// Track options that were explicitly enabled so "restrict" does
 	// not clobber them (e.g. `restrict,pty` keeps PTY allowed).
 	enabled := map[string]bool{}
@@ -184,29 +180,19 @@ func parseOptions(raw []string) (Options, error) {
 			opts.Restrict = true
 		case "no-port-forwarding":
 			opts.NoPortForwarding = true
-		case "no-x11-forwarding":
-			opts.NoX11Forwarding = true
-		case "no-agent-forwarding":
-			opts.NoAgentForwarding = true
 		case "no-pty":
 			opts.NoPTY = true
-		case "no-user-rc":
-			opts.NoUserRC = true
 		case "port-forwarding":
 			enabled["port-forwarding"] = true
 			opts.NoPortForwarding = false
-		case "x11-forwarding":
-			enabled["x11-forwarding"] = true
-			opts.NoX11Forwarding = false
-		case "agent-forwarding":
-			enabled["agent-forwarding"] = true
-			opts.NoAgentForwarding = false
 		case "pty":
 			enabled["pty"] = true
 			opts.NoPTY = false
-		case "user-rc":
-			enabled["user-rc"] = true
-			opts.NoUserRC = false
+		case "no-x11-forwarding", "no-agent-forwarding", "no-user-rc",
+			"x11-forwarding", "agent-forwarding", "user-rc":
+			// Recognised for compatibility; not enforced because
+			// the underlying features are unsupported. See Options
+			// doc for why that's safe.
 		case "command":
 			if !hasVal {
 				return opts, fmt.Errorf(`command= requires a value`)
@@ -253,17 +239,8 @@ func parseOptions(raw []string) (Options, error) {
 		if !enabled["port-forwarding"] {
 			opts.NoPortForwarding = true
 		}
-		if !enabled["x11-forwarding"] {
-			opts.NoX11Forwarding = true
-		}
-		if !enabled["agent-forwarding"] {
-			opts.NoAgentForwarding = true
-		}
 		if !enabled["pty"] {
 			opts.NoPTY = true
-		}
-		if !enabled["user-rc"] {
-			opts.NoUserRC = true
 		}
 	}
 	return opts, nil

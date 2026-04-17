@@ -3,10 +3,8 @@ package client
 import (
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 
 	"golang.org/x/crypto/ssh"
@@ -137,10 +135,4 @@ func (c *Client) ExecInteractive(command string) (int, error) {
 		return -1, err
 	}
 	return 0, nil
-}
-
-// copyStdio is a helper for future use; not currently wired.
-var _ = func(dst io.Writer, src io.Reader, wg *sync.WaitGroup) {
-	defer wg.Done()
-	_, _ = io.Copy(dst, src)
 }

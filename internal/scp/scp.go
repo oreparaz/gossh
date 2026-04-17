@@ -140,7 +140,7 @@ func Download(client *ssh.Client, srcPath, dstPath string) error {
 		errMsg, _ := io.ReadAll(stderr)
 		return fmt.Errorf("expected C-line, got %q: %s", line, strings.TrimSpace(string(errMsg)))
 	}
-	mode, size, _, err := parseCLine(line)
+	mode, size, rn, err := parseCLine(line)
 	if err != nil {
 		return err
 	}
@@ -149,10 +149,11 @@ func Download(client *ssh.Client, srcPath, dstPath string) error {
 		return err
 	}
 
-	// If dstPath is a directory, write into it using the remote name.
+	// If dstPath is a directory, write into it using the remote name
+	// (already validated by parseCLine, so path-traversal is
+	// impossible here).
 	localTarget := dstPath
 	if fi, err := os.Stat(dstPath); err == nil && fi.IsDir() {
-		_, rn, _ := parseCLineName(line)
 		if rn == "" {
 			rn = filepath.Base(srcPath)
 		}
@@ -275,13 +276,6 @@ func validateSCPFilename(name string) error {
 	return nil
 }
 
-// parseCLineName is a convenience that returns just the name; errors
-// are silenced (parseCLine is the authoritative checker).
-func parseCLineName(line string) (os.FileMode, string, error) {
-	m, _, n, err := parseCLine(line)
-	return m, n, err
-}
-
 // splitRemote separates dst into (parent-dir, filename). A bare path
 // returns (.", path) for root-level writes.
 func splitRemote(dst string) (dir, name string) {
@@ -302,7 +296,3 @@ func splitRemote(dst string) (dir, name string) {
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
-
-// ErrRefused is returned when the remote side actively refuses the
-// transfer (e.g., permission denied, file not found).
-var ErrRefused = errors.New("scp: refused by remote")

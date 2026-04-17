@@ -29,11 +29,12 @@ type Config struct {
 	KnownHostsPath string
 	HostCheckMode  knownhosts.Mode
 	ConnectTimeout time.Duration
-	ClientVersion  string
-	// When set, SSH_AUTH_SOCK is ignored. Agent forwarding is never
-	// offered — see project design choices in README.
-	IgnoreAgent bool
 }
+
+// clientVersion is the SSH banner this client advertises. It is
+// deliberately not configurable — a uniform banner across all
+// deployments minimises fingerprinting surface.
+const clientVersion = "SSH-2.0-gossh"
 
 // Client is a connected SSH session.
 type Client struct {
@@ -58,12 +59,9 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 	if cfg.ConnectTimeout == 0 {
 		cfg.ConnectTimeout = 10 * time.Second
 	}
-	if cfg.ClientVersion == "" {
-		cfg.ClientVersion = "SSH-2.0-gossh"
-	}
 
 	// Host-key verifier.
-	if cfg.KnownHostsPath == "" && cfg.HostCheckMode != knownhosts.Off {
+	if cfg.KnownHostsPath == "" {
 		home, _ := os.UserHomeDir()
 		cfg.KnownHostsPath = filepath.Join(home, ".ssh", "known_hosts")
 	}
@@ -86,7 +84,7 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 		Auth:              []ssh.AuthMethod{ssh.PublicKeys(signers...)},
 		HostKeyCallback:   verifier.HostKeyCallback(),
 		HostKeyAlgorithms: sshcrypto.HostKeyAlgorithms,
-		ClientVersion:     cfg.ClientVersion,
+		ClientVersion:     clientVersion,
 		Timeout:           cfg.ConnectTimeout,
 	}
 	sshcrypto.ApplyToConfig(&clientCfg.Config)

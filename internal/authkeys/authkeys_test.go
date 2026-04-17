@@ -50,8 +50,8 @@ func TestParseRestrictAndCommand(t *testing.T) {
 	if !e.Options.Restrict {
 		t.Fatal("restrict not set")
 	}
-	if !e.Options.NoPortForwarding || !e.Options.NoPTY || !e.Options.NoX11Forwarding || !e.Options.NoAgentForwarding {
-		t.Fatalf("restrict should imply all no-* flags: %+v", e.Options)
+	if !e.Options.NoPortForwarding || !e.Options.NoPTY {
+		t.Fatalf("restrict should imply NoPortForwarding and NoPTY: %+v", e.Options)
 	}
 	if e.Options.Command != "/usr/bin/rsync --server" {
 		t.Fatalf("command = %q", e.Options.Command)

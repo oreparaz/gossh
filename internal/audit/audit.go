@@ -80,24 +80,18 @@ func (nopLogger) Emit(Event) {}
 // with integrity.
 //
 // On Write or Sync failure the event is silently accepted by Emit
-// (Emit has no return value), but the failure is surfaced in three
-// ways an operator can observe:
+// (Emit has no return value), but the failure is surfaced:
 //   - `Failures()` returns the cumulative failed-write count.
 //   - If `OnError` is set, it is called for each failure with the
 //     underlying error and the event type. It runs while l.mu is
 //     held, so keep it short (or hand off to a channel).
-//   - If FailClosed is set to a non-nil callback, that callback
-//     is invoked on the first failure; callers can use it to
-//     terminate the server rather than continue unlogged.
 type JSONLogger struct {
-	Writer     io.Writer
-	Fsync      bool
-	OnError    func(err error, eventType string) // optional, called on each failure
-	FailClosed func(err error)                   // optional, called once on first failure
+	Writer  io.Writer
+	Fsync   bool
+	OnError func(err error, eventType string) // optional, called on each failure
 
-	mu            sync.Mutex
-	failures      uint64
-	failClosedRun bool
+	mu       sync.Mutex
+	failures uint64
 }
 
 // Failures returns the cumulative number of Write/Sync errors since
@@ -145,16 +139,12 @@ func (l *JSONLogger) record(err error, eventType string) {
 	l.recordLocked(err, eventType)
 }
 
-// recordLocked increments the failure counter and invokes callbacks.
+// recordLocked increments the failure counter and invokes OnError.
 // Caller must hold l.mu.
 func (l *JSONLogger) recordLocked(err error, eventType string) {
 	l.failures++
 	if l.OnError != nil {
 		l.OnError(err, eventType)
-	}
-	if l.FailClosed != nil && !l.failClosedRun {
-		l.failClosedRun = true
-		l.FailClosed(err)
 	}
 }
 
@@ -162,16 +152,4 @@ func (l *JSONLogger) recordLocked(err error, eventType string) {
 // file does not exist it is created.
 func OpenFile(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
-}
-
-// Multi fans an event out to several Loggers. It emits to each in
-// order; a slow sink blocks all of them (intentional — audit logs
-// are load-bearing, we'd rather block than drop).
-type Multi []Logger
-
-// Emit dispatches e to every sub-logger.
-func (m Multi) Emit(e Event) {
-	for _, l := range m {
-		l.Emit(e)
-	}
 }

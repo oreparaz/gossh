@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 func TestJSONLoggerEmit(t *testing.T) {
@@ -82,15 +81,6 @@ func TestJSONLoggerConcurrent(t *testing.T) {
 
 func TestNopLoggerNoPanic(t *testing.T) {
 	Nop.Emit(Event{Type: "x"})
-}
-
-func TestMultiFansOut(t *testing.T) {
-	var a, b bytes.Buffer
-	m := Multi{&JSONLogger{Writer: &a}, &JSONLogger{Writer: &b}}
-	m.Emit(Event{Type: "x", Time: time.Unix(0, 0).UTC()})
-	if a.Len() == 0 || b.Len() == 0 {
-		t.Fatalf("both sub-loggers should have received: %q %q", a.String(), b.String())
-	}
 }
 
 func TestJSONLoggerNilWriterIsSafe(t *testing.T) {

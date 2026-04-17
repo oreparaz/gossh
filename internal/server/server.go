@@ -38,9 +38,6 @@ type Config struct {
 	// order. At least one is required.
 	HostKeys []ssh.Signer
 
-	// ServerVersion is the SSH banner. Defaults to "SSH-2.0-gossh".
-	ServerVersion string
-
 	// AuthorizedKeys resolves the set of authorized keys for an
 	// inbound user. The returned slice is read-only and may be
 	// shared across connections.
@@ -180,9 +177,6 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.MaxAuthTries == 0 {
 		cfg.MaxAuthTries = 6
-	}
-	if cfg.ServerVersion == "" {
-		cfg.ServerVersion = "SSH-2.0-gossh"
 	}
 	if cfg.MaxChannelsPerConn == 0 {
 		cfg.MaxChannelsPerConn = 64
@@ -481,9 +475,13 @@ func (s *Server) handle(ctx context.Context, nc net.Conn) {
 	}
 }
 
+// serverVersion is hard-coded on purpose: a uniform banner
+// minimises fingerprinting surface across deployments.
+const serverVersion = "SSH-2.0-gossh"
+
 func (s *Server) serverConfig(remoteStr string, log *slog.Logger) *ssh.ServerConfig {
 	cfg := &ssh.ServerConfig{
-		ServerVersion:           s.cfg.ServerVersion,
+		ServerVersion:           serverVersion,
 		MaxAuthTries:            s.cfg.MaxAuthTries,
 		PublicKeyAuthAlgorithms: sshcrypto.PublicKeyAlgorithms,
 		// Password / keyboard-interactive are intentionally nil
@@ -564,8 +562,6 @@ func encodePermBools(p *ssh.Permissions, o authkeys.Options) {
 	}
 	setIf("no-port-forwarding", o.NoPortForwarding)
 	setIf("no-pty", o.NoPTY)
-	setIf("no-agent-forwarding", o.NoAgentForwarding)
-	setIf("no-user-rc", o.NoUserRC)
 	if len(o.PermitOpen) > 0 {
 		parts := make([]string, 0, len(o.PermitOpen))
 		for _, hp := range o.PermitOpen {
@@ -1136,14 +1132,6 @@ func osPath() string {
 		return p
 	}
 	return "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-}
-
-func envToList(env [][2]string) []string {
-	out := make([]string, 0, len(env))
-	for _, kv := range env {
-		out = append(out, kv[0]+"="+kv[1])
-	}
-	return out
 }
 
 func sendExitStatus(ch ssh.Channel, status int) error {
