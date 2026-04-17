@@ -84,6 +84,11 @@ type Config struct {
 	// memory/fd usage against a distributed DoS.
 	MaxConnections int
 
+	// MaxChannelsPerConn caps the number of simultaneous channels
+	// (sessions + direct-tcpip) a single SSH connection can have
+	// open. Zero means unlimited. Default 64 applied in New.
+	MaxChannelsPerConn int
+
 	// ShutdownGrace is the time existing sessions are given to drain
 	// after the outer context is cancelled. Zero means "no grace" —
 	// cancel immediately propagates to child processes (SIGKILL).
@@ -143,6 +148,9 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.ServerVersion == "" {
 		cfg.ServerVersion = "SSH-2.0-gossh"
+	}
+	if cfg.MaxChannelsPerConn == 0 {
+		cfg.MaxChannelsPerConn = 64
 	}
 	log := cfg.Logger
 	if log == nil {
@@ -384,6 +392,9 @@ func (s *Server) handle(ctx context.Context, nc net.Conn) {
 		}()
 	}
 
+	// Per-connection channel limiter to bound resource use.
+	chSem := make(chan struct{}, s.cfg.MaxChannelsPerConn)
+
 	// Dispatch channels.
 	for newCh := range chans {
 		select {
@@ -392,16 +403,33 @@ func (s *Server) handle(ctx context.Context, nc net.Conn) {
 			continue
 		default:
 		}
+		// Reserve a slot before dispatching.
+		select {
+		case chSem <- struct{}{}:
+		default:
+			_ = newCh.Reject(ssh.ResourceShortage, "too many channels on this connection")
+			continue
+		}
+		release := func() { <-chSem }
+
 		switch newCh.ChannelType() {
 		case "session":
-			go s.handleSession(ctx, conn, newCh, log)
+			go func() {
+				defer release()
+				s.handleSession(ctx, conn, newCh, log)
+			}()
 		case "direct-tcpip":
 			if !s.cfg.AllowLocalForward || hasExt(conn, "no-port-forwarding") {
+				release()
 				_ = newCh.Reject(ssh.Prohibited, "direct-tcpip not permitted")
 				continue
 			}
-			go s.handleDirectTCPIP(ctx, conn, newCh, log)
+			go func() {
+				defer release()
+				s.handleDirectTCPIP(ctx, conn, newCh, log)
+			}()
 		default:
+			release()
 			_ = newCh.Reject(ssh.UnknownChannelType, "unknown channel type")
 		}
 	}
