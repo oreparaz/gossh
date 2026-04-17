@@ -86,7 +86,11 @@ func FuzzChannelIO(f *testing.F) {
 		sess.Stdout = io.Discard
 		sess.Stderr = io.Discard
 
-		if err := sess.Start("true"); err != nil {
+		// Running `cat` forces the server to shovel fuzz-controlled
+		// stdin bytes through the child. The saved command string is
+		// ignored to avoid quoting issues; we only care that the
+		// server's stdio pipe survives arbitrary input.
+		if err := sess.Start("head -c 65536 >/dev/null"); err != nil {
 			return
 		}
 		// Cap writes to avoid minutes-long iterations under heavy
