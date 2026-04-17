@@ -176,6 +176,29 @@ func TestAuthorizedKeysEnvironmentNoShellInjection(t *testing.T) {
 	}
 }
 
+// TestCombinedFromAndCommand sets both restrictions on a single key.
+// Connections from an allowed IP must run the forced command; an
+// allowed IP with a bypassable setup must NOT leak the client's
+// command.
+func TestCombinedFromAndCommand(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	h := buildCustomRig(t, `from="127.0.0.1",command="echo forced-yes"`)
+	cmd := h.sshCmd(t, nil, "echo client-no")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("ssh: %v\n%s", err, out)
+	}
+	s := string(out)
+	if !strings.Contains(s, "forced-yes") {
+		t.Fatalf("forced command missing: %q", s)
+	}
+	if strings.Contains(s, "client-no") {
+		t.Fatalf("client command leaked past command= + from=: %q", s)
+	}
+}
+
 func TestForcedCommand(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration")
