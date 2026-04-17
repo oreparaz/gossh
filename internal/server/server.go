@@ -537,6 +537,11 @@ func permitOpenAllows(list []authkeys.HostPort, host string, port uint32) bool {
 
 // handleGlobalRequests dispatches per-connection global requests.
 func (s *Server) handleGlobalRequests(ctx context.Context, conn *ssh.ServerConn, fwd *remoteForwards, reqs <-chan *ssh.Request, log *slog.Logger) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("panic in handleGlobalRequests", "panic", fmt.Sprintf("%v", r))
+		}
+	}()
 	for req := range reqs {
 		switch req.Type {
 		case "tcpip-forward", "cancel-tcpip-forward":
@@ -559,6 +564,11 @@ func (s *Server) handleGlobalRequests(ctx context.Context, conn *ssh.ServerConn,
 // channel-open payload and splices data in both directions. This is
 // what powers client-side "-L local_port:target_host:target_port".
 func (s *Server) handleDirectTCPIP(ctx context.Context, conn *ssh.ServerConn, newCh ssh.NewChannel, log *slog.Logger) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("panic in handleDirectTCPIP", "panic", fmt.Sprintf("%v", r))
+		}
+	}()
 	var req struct {
 		DestAddr string
 		DestPort uint32
