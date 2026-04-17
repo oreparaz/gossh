@@ -227,7 +227,14 @@ func acceptLoop(l net.Listener, handle func(net.Conn)) {
 	}
 }
 
-func splice(a, b net.Conn) {
+// Splice copies bytes bidirectionally between a and b until one side
+// EOFs. After a half-close, the other direction is given up to 10 s
+// to flush before the whole pair is force-closed — matches OpenSSH's
+// behavior of not keeping half-open tunnels alive forever.
+//
+// Both server-side (ssh.Channel ↔ net.Conn) and client-side
+// (net.Conn ↔ net.Conn) splicers use this single helper.
+func Splice(a, b io.ReadWriteCloser) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 	var once sync.Once
@@ -237,28 +244,23 @@ func splice(a, b net.Conn) {
 			_ = b.Close()
 		})
 	}
-	go func() {
+	half := func(dst, src io.ReadWriteCloser) {
 		defer wg.Done()
-		_, _ = io.Copy(a, b)
-		if cw, ok := a.(interface{ CloseWrite() error }); ok {
-			_ = cw.CloseWrite()
-		}
-		// After one direction EOFs, force-close both sides if the
-		// peer doesn't reciprocate within a grace period. Matches
-		// spliceChannel on the server side.
-		time.AfterFunc(10*time.Second, forceClose)
-	}()
-	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(b, a)
-		if cw, ok := b.(interface{ CloseWrite() error }); ok {
+		_, _ = io.Copy(dst, src)
+		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
 			_ = cw.CloseWrite()
 		}
 		time.AfterFunc(10*time.Second, forceClose)
-	}()
+	}
+	go half(a, b)
+	go half(b, a)
 	wg.Wait()
 	forceClose()
 }
+
+// splice is the old lower-case name, kept briefly while we migrate
+// existing callers in this package.
+func splice(a, b net.Conn) { Splice(a, b) }
 
 // --- SOCKS5 (RFC 1928) minimal server ---
 

@@ -25,6 +25,7 @@ import (
 
 	"github.com/oscar/gossh/internal/audit"
 	"github.com/oscar/gossh/internal/authkeys"
+	"github.com/oscar/gossh/internal/forward"
 	"github.com/oscar/gossh/internal/sshcrypto"
 )
 
@@ -620,9 +621,10 @@ func permitOpenFromExt(p *ssh.Permissions, key string) []authkeys.HostPort {
 	return out
 }
 
-// permitOpenAllows reports whether target (host:port) is allowed by
-// the permitopen list. An empty list from authorized_keys means the
-// key did not restrict forwarding.
+// permitOpenAllows reports whether (host, port) is matched by one
+// of the permitopen/permitlisten patterns. An empty list is treated
+// as "no restriction" — that matches the OpenSSH rule that absence
+// of the option leaves everything allowed.
 func permitOpenAllows(list []authkeys.HostPort, host string, port uint32) bool {
 	if len(list) == 0 {
 		return true
@@ -727,43 +729,11 @@ func (s *Server) handleDirectTCPIP(ctx context.Context, conn *ssh.ServerConn, ne
 	log.Info("direct-tcpip closed", "target", target)
 }
 
-// spliceChannel copies bytes in both directions between an SSH channel
-// and a net.Conn. When one direction finishes (EOF or error), it
-// half-closes the other side's write half so the peer receives EOF.
-// If the peer keeps its end open despite receiving EOF (e.g., HTTP
-// keep-alive), the second copy goroutine may still block indefinitely;
-// callers must ensure the channel/conn is eventually fully closed —
-// which we do unconditionally below after at most a short grace.
+// spliceChannel bridges an SSH channel and a net.Conn. It is a thin
+// wrapper over forward.Splice so the half-close / force-close policy
+// lives in exactly one place.
 func spliceChannel(ch ssh.Channel, conn net.Conn) {
-	var wg sync.WaitGroup
-	wg.Add(2)
-	var once sync.Once
-	forceClose := func() {
-		once.Do(func() {
-			_ = ch.Close()
-			_ = conn.Close()
-		})
-	}
-	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(ch, conn)
-		_ = ch.CloseWrite()
-		// If the peer takes too long to reciprocate, force close.
-		// This matches OpenSSH's behaviour: once one direction is
-		// done, don't keep the tunnel open forever waiting for the
-		// other.
-		time.AfterFunc(10*time.Second, forceClose)
-	}()
-	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(conn, ch)
-		if cw, ok := conn.(interface{ CloseWrite() error }); ok {
-			_ = cw.CloseWrite()
-		}
-		time.AfterFunc(10*time.Second, forceClose)
-	}()
-	wg.Wait()
-	forceClose()
+	forward.Splice(ch, conn)
 }
 
 // handleSession drives a single session channel. It collects env and
@@ -958,7 +928,7 @@ func (st *sessionState) handleRequest(req *ssh.Request) {
 					})
 					st.started = true
 					ok = true
-					go st.run(cmdline, false)
+					go st.run(cmdline)
 				}
 			}
 		}
@@ -978,7 +948,7 @@ func (st *sessionState) handleRequest(req *ssh.Request) {
 			})
 			st.started = true
 			ok = true
-			go st.run(cmdline, true)
+			go st.run(cmdline)
 		}
 	case "window-change":
 		if st.ptyReq != nil {
@@ -1007,16 +977,17 @@ func (st *sessionState) handleRequest(req *ssh.Request) {
 }
 
 // run dispatches to the exec or PTY runner and signals completion.
-func (st *sessionState) run(command string, wantShell bool) {
+// An empty command implies `shell` — the caller already decided
+// which SSH request type to honour.
+func (st *sessionState) run(command string) {
 	defer close(st.done)
 	if st.ptyReq != nil {
-		st.runPTY(command, wantShell)
+		st.runPTY(command)
 		return
 	}
-	if wantShell && command == "" {
-		// A "shell" request without pty-req: start an interactive
-		// shell piped through the channel. Some clients do this when
-		// invoked with -T.
+	if command == "" {
+		// `shell` with no PTY: interactive shell piped raw through
+		// the channel. Some clients do this when invoked with -T.
 		st.runPipe(st.server.cfg.Shell, nil)
 		return
 	}

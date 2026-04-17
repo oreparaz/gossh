@@ -86,9 +86,6 @@ func TestParseServer(t *testing.T) {
 	if s.MaxAuthTries != 3 {
 		t.Fatalf("maxauth=%d", s.MaxAuthTries)
 	}
-	if len(s.Warnings) == 0 {
-		t.Fatal("expected warning about Banner")
-	}
 }
 
 func TestEqualsForm(t *testing.T) {

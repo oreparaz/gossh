@@ -26,6 +26,7 @@ import (
 
 	"github.com/oscar/gossh/internal/audit"
 	"github.com/oscar/gossh/internal/authkeys"
+	"github.com/oscar/gossh/internal/cliutil"
 	"github.com/oscar/gossh/internal/hostkey"
 	"github.com/oscar/gossh/internal/server"
 	"github.com/oscar/gossh/internal/sshconfig"
@@ -41,7 +42,7 @@ func main() {
 func run() error {
 	var (
 		listen       = flag.String("listen", "0.0.0.0:2222", "address to listen on")
-		hostKeyPaths multiFlag
+		hostKeyPaths cliutil.MultiFlag
 		authKeysPath = flag.String("authorized-keys", "", "path to authorized_keys file (required)")
 		shell        = flag.String("shell", "/bin/bash", "shell to launch for interactive sessions")
 		allowExec    = flag.Bool("allow-exec", true, "accept 'exec' requests")
@@ -76,14 +77,8 @@ func run() error {
 		if len(hostKeyPaths) == 0 && len(sc.HostKeys) > 0 {
 			hostKeyPaths = append(hostKeyPaths, sc.HostKeys...)
 		}
-		if sc.MaxAuthTries != 0 && !flagSet("max-auth-tries") {
+		if sc.MaxAuthTries != 0 && !cliutil.FlagSet("max-auth-tries") {
 			*maxAuth = sc.MaxAuthTries
-		}
-		if sc.Port != 0 && !flagSet("listen") {
-			// Rewrite listen to use configured port if we're on the default.
-			if strings.HasSuffix(*listen, ":2222") {
-				*listen = strings.TrimSuffix(*listen, ":2222") + fmt.Sprintf(":%d", sc.Port)
-			}
 		}
 		if sc.PasswordAuthentication {
 			return errors.New("sshd_config: PasswordAuthentication yes is not supported; remove it to proceed")
@@ -104,7 +99,7 @@ func run() error {
 	}
 	if len(hostKeyPaths) == 0 {
 		// Sensible default: ./host_ed25519 next to the binary.
-		hostKeyPaths = multiFlag{"./host_ed25519"}
+		hostKeyPaths = cliutil.MultiFlag{"./host_ed25519"}
 	}
 
 	lvl := slog.LevelInfo
@@ -182,19 +177,4 @@ func run() error {
 	defer cancel()
 
 	return s.ListenAndServe(ctx)
-}
-
-type multiFlag []string
-
-func (m *multiFlag) String() string     { return fmt.Sprintf("%v", []string(*m)) }
-func (m *multiFlag) Set(s string) error { *m = append(*m, s); return nil }
-
-func flagSet(name string) bool {
-	seen := false
-	flag.Visit(func(f *flag.Flag) {
-		if f.Name == name {
-			seen = true
-		}
-	})
-	return seen
 }

@@ -11,7 +11,6 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/oscar/gossh/internal/audit"
-	"github.com/oscar/gossh/internal/authkeys"
 )
 
 // remoteForwards tracks the listeners a single SSH connection has
@@ -116,7 +115,7 @@ func (s *Server) doRemoteForward(ctx context.Context, conn *ssh.ServerConn, fwd 
 		_ = req.Reply(false, nil)
 		return
 	}
-	if !permitListenAllows(permitOpenFromExt(conn.Permissions, "permitlisten"), body.BindAddr, body.BindPort) {
+	if !permitOpenAllows(permitOpenFromExt(conn.Permissions, "permitlisten"), body.BindAddr, body.BindPort) {
 		log.Warn("tcpip-forward rejected by permitlisten", "host", body.BindAddr, "port", body.BindPort)
 		s.audit.Emit(audit.Event{
 			Type: audit.TypeTCPIPForwardReject, Remote: conn.RemoteAddr().String(), User: conn.User(),
@@ -168,24 +167,6 @@ func (s *Server) doRemoteForward(ctx context.Context, conn *ssh.ServerConn, fwd 
 	}
 
 	go s.acceptRemoteForward(ctx, conn, body.BindAddr, actualPort, l, fwd.chSem, log)
-}
-
-// permitListenAllows is the -R counterpart of permitOpenAllows; the
-// "port of 0" semantics are the same.
-func permitListenAllows(list []authkeys.HostPort, host string, port uint32) bool {
-	if len(list) == 0 {
-		return true
-	}
-	for _, hp := range list {
-		if hp.Host != "*" && hp.Host != host {
-			continue
-		}
-		if hp.Port != 0 && uint32(hp.Port) != port {
-			continue
-		}
-		return true
-	}
-	return false
 }
 
 // acceptRemoteForward runs the accept loop for a -R listener. For

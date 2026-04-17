@@ -31,7 +31,6 @@ type ClientHost struct {
 // applied in order. Earliest match wins (that is OpenSSH semantics).
 type ClientConfig struct {
 	Sections []clientSection
-	Warnings []string
 }
 
 type clientSection struct {
@@ -117,7 +116,7 @@ func ParseClient(r io.Reader) (*ClientConfig, error) {
 			continue
 		}
 		if lk == "match" || lk == "include" {
-			c.Warnings = append(c.Warnings, fmt.Sprintf("line %d: %q directive ignored", lineNo, key))
+			// Silently skipped — see package doc for the scope cut.
 			continue
 		}
 		if lk == "identityfile" {
@@ -149,29 +148,25 @@ func ParseClientFile(path string) (*ClientConfig, error) {
 	return ParseClient(f)
 }
 
-// ServerConfig is the parsed sshd_config.
+// ServerConfig is the parsed sshd_config. Only the fields the server
+// actually consumes are kept — silently-stored-but-ignored fields
+// mislead operators who write them expecting enforcement.
 type ServerConfig struct {
 	Port                   int
-	ListenAddresses        []string
 	HostKeys               []string
 	AuthorizedKeysFile     string
 	PermitRootLogin        string // "no" / "prohibit-password" / "yes"
-	PasswordAuthentication bool
-	AllowTCPForwarding     string // "yes" / "no" / "local" / "remote"
-	LoginGraceTime         string
+	PasswordAuthentication bool   // rejected at startup if true
 	MaxAuthTries           int
-	Warnings               []string
 }
 
 // ParseServer parses an sshd_config stream. Unknown keywords are
-// silently ignored; they become Warnings only when enabled in the
-// top-level API (this is what sshd_config does when a CLI flag
-// overrides a file value — the file is best-effort).
+// silently ignored — sshd_config has a large vocabulary and we want
+// drop-in files to work.
 func ParseServer(r io.Reader) (*ServerConfig, error) {
 	s := &ServerConfig{
 		PermitRootLogin:        "prohibit-password",
 		PasswordAuthentication: false,
-		AllowTCPForwarding:     "yes",
 	}
 	scanner := bufio.NewScanner(r)
 	lineNo := 0
@@ -192,8 +187,6 @@ func ParseServer(r io.Reader) (*ServerConfig, error) {
 				return nil, fmt.Errorf("line %d: bad Port %q", lineNo, val)
 			}
 			s.Port = p
-		case "listenaddress":
-			s.ListenAddresses = append(s.ListenAddresses, val)
 		case "hostkey":
 			s.HostKeys = append(s.HostKeys, expandUser(val))
 		case "authorizedkeysfile":
@@ -202,18 +195,12 @@ func ParseServer(r io.Reader) (*ServerConfig, error) {
 			s.PermitRootLogin = val
 		case "passwordauthentication":
 			s.PasswordAuthentication = truthy(val)
-		case "allowtcpforwarding":
-			s.AllowTCPForwarding = val
-		case "logingracetime":
-			s.LoginGraceTime = val
 		case "maxauthtries":
 			n, err := strconv.Atoi(val)
 			if err != nil {
 				return nil, fmt.Errorf("line %d: bad MaxAuthTries %q", lineNo, val)
 			}
 			s.MaxAuthTries = n
-		default:
-			s.Warnings = append(s.Warnings, fmt.Sprintf("line %d: ignoring %q", lineNo, key))
 		}
 	}
 	if err := scanner.Err(); err != nil {

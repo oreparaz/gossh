@@ -16,13 +16,12 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 
 	"github.com/oscar/gossh/internal/client"
+	"github.com/oscar/gossh/internal/cliutil"
 	"github.com/oscar/gossh/internal/forward"
-	"github.com/oscar/gossh/internal/knownhosts"
 	"github.com/oscar/gossh/internal/sshconfig"
 )
 
@@ -37,19 +36,14 @@ func main() {
 	os.Exit(code)
 }
 
-type multiFlag []string
-
-func (m *multiFlag) String() string     { return fmt.Sprintf("%v", []string(*m)) }
-func (m *multiFlag) Set(s string) error { *m = append(*m, s); return nil }
-
 func run() (int, error) {
 	var (
 		port          = flag.Int("p", 22, "remote port")
 		login         = flag.String("l", "", "remote username (overrides user@host)")
-		identities    multiFlag
-		locals        multiFlag
-		remotes       multiFlag
-		dynamics      multiFlag
+		identities    cliutil.MultiFlag
+		locals        cliutil.MultiFlag
+		remotes       cliutil.MultiFlag
+		dynamics      cliutil.MultiFlag
 		forceTTY      = flag.Bool("t", false, "force PTY allocation")
 		disableTTY    = flag.Bool("T", false, "disable PTY allocation")
 		noCommand     = flag.Bool("N", false, "do not execute a remote command (useful for forwarding)")
@@ -67,7 +61,7 @@ func run() (int, error) {
 		return 2, errors.New("usage: gossh [flags] [user@]host[:port] [command...]")
 	}
 	target := flag.Arg(0)
-	user, host, remotePort, err := parseTarget(target, *port)
+	user, host, remotePort, err := cliutil.ParseTarget(target, *port)
 	if err != nil {
 		return 2, err
 	}
@@ -97,11 +91,11 @@ func run() (int, error) {
 	}
 	// Identity files: CLI wins; otherwise use file entries.
 	if len(identities) == 0 && len(cfgHost.IdentityFiles) > 0 {
-		identities = append(multiFlag(nil), cfgHost.IdentityFiles...)
+		identities = append(cliutil.MultiFlag(nil), cfgHost.IdentityFiles...)
 	}
 	// Strict host key checking: CLI explicit wins over file.
 	strictVal := *strict
-	if cfgHost.StrictHost != "" && !explicitStrict(strict) {
+	if cfgHost.StrictHost != "" && !cliutil.FlagSet("strict-host-key") {
 		strictVal = cfgHost.StrictHost
 	}
 	knownHostsVal := *knownHostsArg
@@ -109,7 +103,7 @@ func run() (int, error) {
 		knownHostsVal = cfgHost.KnownHosts
 	}
 
-	mode, err := parseStrict(strictVal)
+	mode, err := cliutil.ParseStrictHostKey(strictVal)
 	if err != nil {
 		return 2, err
 	}
@@ -206,68 +200,5 @@ func run() (int, error) {
 		// NotifyContext above) terminates the remote command.
 		status, err := c.ExecContext(ctx, strings.Join(remoteArgs, " "), os.Stdin, os.Stdout, os.Stderr)
 		return status, err
-	}
-}
-
-func parseTarget(s string, defPort int) (user, host string, port int, err error) {
-	port = defPort
-	// user@host[:port]
-	if at := strings.LastIndex(s, "@"); at >= 0 {
-		user = s[:at]
-		s = s[at+1:]
-	}
-	// IPv6 bracketed?
-	if strings.HasPrefix(s, "[") {
-		end := strings.Index(s, "]")
-		if end < 0 {
-			return "", "", 0, fmt.Errorf("unterminated IPv6 bracket in %q", s)
-		}
-		host = s[1:end]
-		rest := s[end+1:]
-		if rest != "" {
-			if !strings.HasPrefix(rest, ":") {
-				return "", "", 0, fmt.Errorf("unexpected %q after IPv6", rest)
-			}
-			p, perr := strconv.Atoi(rest[1:])
-			if perr != nil {
-				return "", "", 0, fmt.Errorf("bad port %q", rest[1:])
-			}
-			port = p
-		}
-		return user, host, port, nil
-	}
-	if i := strings.LastIndex(s, ":"); i >= 0 {
-		host = s[:i]
-		p, perr := strconv.Atoi(s[i+1:])
-		if perr != nil {
-			return "", "", 0, fmt.Errorf("bad port %q", s[i+1:])
-		}
-		port = p
-	} else {
-		host = s
-	}
-	return user, host, port, nil
-}
-
-// explicitStrict reports whether the user set -strict-host-key on the
-// command line (vs. leaving the default in place).
-func explicitStrict(p *string) bool {
-	seen := false
-	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "strict-host-key" {
-			seen = true
-		}
-	})
-	return seen
-}
-
-func parseStrict(v string) (knownhosts.Mode, error) {
-	switch v {
-	case "yes", "ask", "strict", "":
-		return knownhosts.Strict, nil
-	case "accept-new":
-		return knownhosts.AcceptNew, nil
-	default:
-		return 0, fmt.Errorf("unknown strict-host-key %q", v)
 	}
 }

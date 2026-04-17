@@ -19,13 +19,12 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/oscar/gossh/internal/client"
-	"github.com/oscar/gossh/internal/knownhosts"
+	"github.com/oscar/gossh/internal/cliutil"
 	"github.com/oscar/gossh/internal/scp"
 )
 
@@ -36,16 +35,11 @@ func main() {
 	}
 }
 
-type multiFlag []string
-
-func (m *multiFlag) String() string     { return fmt.Sprintf("%v", []string(*m)) }
-func (m *multiFlag) Set(s string) error { *m = append(*m, s); return nil }
-
 func run() error {
 	var (
 		port          = flag.Int("p", 22, "remote port")
 		login         = flag.String("l", "", "remote username (overrides user@host)")
-		identities    multiFlag
+		identities    cliutil.MultiFlag
 		strictArg     = flag.String("strict-host-key", "yes", "yes (default, refuse unknown) | accept-new (TOFU)")
 		knownHostsArg = flag.String("known-hosts", "", "override known_hosts path")
 		connTimeout   = flag.Duration("connect-timeout", 10*time.Second, "")
@@ -84,7 +78,7 @@ func run() error {
 		remote = srcBody
 	}
 
-	user, host, remotePort, err := parseTarget(target, *port)
+	user, host, remotePort, err := cliutil.ParseTarget(target, *port)
 	if err != nil {
 		return err
 	}
@@ -92,7 +86,7 @@ func run() error {
 		user = *login
 	}
 
-	mode, err := parseStrict(*strictArg)
+	mode, err := cliutil.ParseStrictHostKey(*strictArg)
 	if err != nil {
 		return err
 	}
@@ -145,53 +139,4 @@ func splitRemote(s string) (remote, path string) {
 		return "", s
 	}
 	return s[:i], s[i+1:]
-}
-
-func parseTarget(s string, defPort int) (user, host string, port int, err error) {
-	port = defPort
-	if at := strings.LastIndex(s, "@"); at >= 0 {
-		user = s[:at]
-		s = s[at+1:]
-	}
-	if strings.HasPrefix(s, "[") {
-		end := strings.Index(s, "]")
-		if end < 0 {
-			return "", "", 0, fmt.Errorf("unterminated IPv6 bracket in %q", s)
-		}
-		host = s[1:end]
-		rest := s[end+1:]
-		if rest != "" {
-			if !strings.HasPrefix(rest, ":") {
-				return "", "", 0, fmt.Errorf("unexpected %q after IPv6", rest)
-			}
-			p, perr := strconv.Atoi(rest[1:])
-			if perr != nil {
-				return "", "", 0, fmt.Errorf("bad port %q", rest[1:])
-			}
-			port = p
-		}
-		return user, host, port, nil
-	}
-	if i := strings.LastIndex(s, ":"); i >= 0 {
-		host = s[:i]
-		p, perr := strconv.Atoi(s[i+1:])
-		if perr != nil {
-			return "", "", 0, fmt.Errorf("bad port %q", s[i+1:])
-		}
-		port = p
-	} else {
-		host = s
-	}
-	return user, host, port, nil
-}
-
-func parseStrict(v string) (knownhosts.Mode, error) {
-	switch v {
-	case "yes", "ask", "strict", "":
-		return knownhosts.Strict, nil
-	case "accept-new":
-		return knownhosts.AcceptNew, nil
-	default:
-		return 0, fmt.Errorf("unknown strict-host-key %q", v)
-	}
 }

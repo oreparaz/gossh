@@ -11,18 +11,16 @@ import (
 // runPTY starts the shell attached to a fresh pseudo-terminal and
 // bridges data in both directions between the SSH channel and the
 // pty master.
-func (st *sessionState) runPTY(command string, wantShell bool) {
+func (st *sessionState) runPTY(command string) {
 	shell := st.server.cfg.Shell
 	if shell == "" {
 		shell = "/bin/sh"
 	}
 	args := []string{}
 	if command == "" {
-		// Interactive login-ish shell. We pass `-l` so it sources
-		// the user's profile; this matches what OpenSSH does for a
-		// plain `ssh host` with pty.
+		// Interactive login shell. `-l` sources the user's profile,
+		// matching what OpenSSH does for `ssh host` with pty.
 		args = []string{"-l"}
-		_ = wantShell
 	} else {
 		args = []string{"-c", command}
 	}
