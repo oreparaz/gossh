@@ -120,6 +120,25 @@ func TestFromAllowAndDeny(t *testing.T) {
 	}
 }
 
+// TestAuthorizedKeysEnvironmentApplied verifies that
+// environment="NAME=VALUE" in authorized_keys actually reaches the
+// remote process. Previously this was parsed but silently dropped.
+func TestAuthorizedKeysEnvironmentApplied(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	h := buildCustomRig(t, `environment="AUTHKEY_MARKER=stamped",environment="AK2=two"`)
+	cmd := h.sshCmd(t, nil, "echo $AUTHKEY_MARKER $AK2")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("ssh: %v\n%s", err, out)
+	}
+	got := strings.TrimSpace(string(out))
+	if got != "stamped two" {
+		t.Fatalf("authorized_keys env not applied: got %q, want %q", got, "stamped two")
+	}
+}
+
 func TestForcedCommand(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration")

@@ -7,6 +7,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -445,6 +446,25 @@ func encodePermBools(p *ssh.Permissions, o authkeys.Options) {
 		}
 		p.Extensions["permitlisten"] = strings.Join(parts, ",")
 	}
+	if len(o.Environment) > 0 {
+		// Encode as JSON for lossless round-trip through the string map.
+		if b, err := json.Marshal(o.Environment); err == nil {
+			p.Extensions["environment"] = string(b)
+		}
+	}
+}
+
+// envFromPerms returns the env map the authorized_keys `environment=`
+// options contributed for this session. Empty if none.
+func envFromPerms(p *ssh.Permissions) map[string]string {
+	if p == nil || p.Extensions["environment"] == "" {
+		return nil
+	}
+	out := map[string]string{}
+	if err := json.Unmarshal([]byte(p.Extensions["environment"]), &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 // permitOpenFromExt parses the permitopen extension into a slice of
@@ -939,7 +959,15 @@ func (st *sessionState) finalEnv(isPTY bool) []string {
 		}
 		base = append(base, fmt.Sprintf("SSH_CONNECTION=%s %d %s %d", addr.IP, addr.Port, lip, lp))
 	}
-	// Client-provided env on top (filtered in isSafeEnvName).
+	// authorized_keys environment="..." vars (trusted — configured by
+	// the operator). Layer these first so client-supplied values can
+	// override nothing.
+	if st.conn.Permissions != nil {
+		for k, v := range envFromPerms(st.conn.Permissions) {
+			base = append(base, k+"="+v)
+		}
+	}
+	// Client-provided env last (filtered in isSafeEnvName).
 	for _, kv := range st.env {
 		base = append(base, kv[0]+"="+kv[1])
 	}
