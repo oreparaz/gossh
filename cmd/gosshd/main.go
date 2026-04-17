@@ -135,7 +135,16 @@ func run() error {
 			return fmt.Errorf("open audit log %s: %w", *auditPath, err)
 		}
 		defer f.Close()
-		auditLog = &audit.JSONLogger{Writer: f, Fsync: *auditFsync}
+		// Surface audit write/fsync failures via the regular logger
+		// so operators notice disk-full / permissions issues even
+		// though Emit itself has no return value.
+		auditLog = &audit.JSONLogger{
+			Writer: f,
+			Fsync:  *auditFsync,
+			OnError: func(err error, eventType string) {
+				log.Error("audit log write failed", "event", eventType, "err", err)
+			},
+		}
 	}
 
 	cfg := server.Config{

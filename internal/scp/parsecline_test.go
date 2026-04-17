@@ -30,6 +30,14 @@ func TestParseCLineRejectsPathTraversal(t *testing.T) {
 		"C0644 10 ",
 		"C0644 10 a/b",
 		"C0644 10 evil\x00name",
+		// Windows-style traversal — rejected so a Windows client
+		// of this package is safe even though filepath.Join would
+		// honour these separators.
+		`C0644 10 ..\evil`,
+		`C0644 10 a\b`,
+		`C0644 10 C:evil`,
+		`C0644 10 c:`,
+		`C0644 10 Z:\path`,
 	}
 	for _, line := range bad {
 		if _, _, _, err := parseCLine(line); err == nil {

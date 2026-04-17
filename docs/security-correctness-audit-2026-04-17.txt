@@ -1,0 +1,116 @@
+Security and Correctness Audit
+Project: gossh / gosshd
+Date: 2026-04-17
+
+Verification run:
+- `PATH=/usr/local/go/bin:$PATH /usr/local/go/bin/go test ./...`
+- `PATH=/usr/local/go/bin:$PATH /usr/local/go/bin/go test -race ./...`
+- `PATH=/usr/local/go/bin:$PATH /usr/local/go/bin/go vet ./...`
+- All three completed successfully.
+
+Scope note:
+- This report focuses on issues that still exist in the current tree. I did not repeat already-fixed items from `docs/bugs-found.md`.
+
+1. High: client binaries silently trust first-seen host keys by default
+Impact:
+- `gossh` and `gossh-scp` default to TOFU (`accept-new`), so a network attacker can impersonate a server on first contact and permanently seed a malicious host key into `known_hosts`.
+- This is made worse by a documentation conflict: `SECURITY.md` says strict host-key checking is the default, but the binaries do not actually do that.
+Evidence:
+- `cmd/gossh/main.go:56`
+- `cmd/gossh-scp/main.go:49`
+- `SECURITY.md:84-86`
+- `docs/configuration.md:53`
+Suggested fix:
+- Change the CLI default to strict host-key checking (`yes` / `knownhosts.Strict`).
+- If a more OpenSSH-like UX is wanted, implement an explicit interactive prompt mode instead of silent TOFU.
+- Align `SECURITY.md`, `README.md`, and `docs/configuration.md` so the documented default matches the binary behavior.
+
+2. Medium: `client.Dial` stops honoring context/deadlines once TCP connect succeeds
+Impact:
+- A server that accepts TCP and then stalls before or during the SSH handshake can hang callers indefinitely even when the caller supplied a cancelled context or a `ConnectTimeout`.
+- This affects both library users and the `gossh` / `gossh-scp` CLIs because they both call `client.Dial`.
+Evidence:
+- `internal/client/client.go:96-105` only applies the context to `net.Dialer.DialContext`, then calls `ssh.NewClientConn` on the raw socket.
+- Upstream `x/crypto/ssh` documents `ClientConfig.Timeout` as TCP-connect-only: `/home/oscar/go/pkg/mod/golang.org/x/crypto@v0.50.0/ssh/client.go:177-183`, `/home/oscar/go/pkg/mod/golang.org/x/crypto@v0.50.0/ssh/client.go:239-242`.
+Suggested fix:
+- Bound the handshake explicitly. Two straightforward options:
+- Set a deadline on `nc` before `ssh.NewClientConn` and clear it after success.
+- Or run `ssh.NewClientConn` in a goroutine and close `nc` on `ctx.Done()`.
+- The bound should cover banner exchange, KEX, host-key verification, and user authentication.
+
+3. Medium: `-R 0:...` listeners are keyed by the requested port instead of the assigned port
+Impact:
+- Remote forwards created with port `0` cannot be cancelled reliably once the server assigns a real port.
+- `client.Listen(...:0)` / `ssh -R 0:...` can therefore leak listeners until the whole SSH connection closes.
+- Repeated ephemeral remote forwards also collide in the per-connection registry because every one of them is stored under the same `host:0` key.
+Evidence:
+- Creation stores the listener under the requested port: `internal/server/remote_forward.go:140-142`.
+- Cancellation looks up the request's port directly: `internal/server/remote_forward.go:95-101`.
+- The client-side `x/crypto/ssh` listener switches to the assigned port and uses that assigned port in `cancel-tcpip-forward`: `/home/oscar/go/pkg/mod/golang.org/x/crypto@v0.50.0/ssh/tcpip.go:141-169`, `/home/oscar/go/pkg/mod/golang.org/x/crypto@v0.50.0/ssh/tcpip.go:343-364`.
+Suggested fix:
+- Store remote forwards under the actual bound port once `Listen` succeeds.
+- When the request asked for port `0`, reply with the assigned port and also use that assigned port for the internal registry and later cancellation.
+- Add an integration test that opens `-R 0:...`, closes it, and verifies that the server-side listener is actually gone.
+
+4. Medium: inbound `forwarded-tcpip` traffic bypasses `MaxChannelsPerConn`
+Impact:
+- `MaxChannelsPerConn` only caps channels opened by the SSH client (`session` and `direct-tcpip`).
+- Once `AllowRemoteForward` is enabled, every inbound connection to an `-R` listener creates a new goroutine and outgoing `forwarded-tcpip` channel with no equivalent cap.
+- An attacker can therefore flood a publicly bound remote-forward listener and drive unbounded goroutine/channel creation, defeating the advertised per-connection channel limit.
+Evidence:
+- Incoming channel cap only wraps `session` and `direct-tcpip`: `internal/server/server.go:440-479`.
+- Remote-forward accept path has no semaphore or concurrency bound: `internal/server/remote_forward.go:182-214`.
+Suggested fix:
+- Share a per-connection semaphore with `acceptRemoteForward` and charge each `forwarded-tcpip` channel against the same cap.
+- Consider a separate per-listener or per-connection remote-forward concurrency limit if you want distinct tuning for `-R`.
+- Add a stress test that floods an `-R` listener and verifies bounded goroutine/channel growth.
+
+5. Medium: SCP download traversal hardening is incomplete on Windows
+Impact:
+- `parseCLine` rejects `/` and NUL, but not backslash, drive prefixes, or UNC-style names.
+- On Windows clients, `filepath.Join` and `os.OpenFile` treat backslash and volume-prefixed paths as real path separators, so a malicious server can still escape the chosen destination directory.
+- This means the intended CVE-2019-6111-style defense is not actually cross-platform.
+Evidence:
+- Filename validation only rejects `/`, NUL, empty, `.` and `..`: `internal/scp/scp.go:233-240`.
+- Destination path construction later uses `filepath.Join`: `internal/scp/scp.go:152-161`.
+Suggested fix:
+- Reject `\`, absolute paths, volume-prefixed names, and UNC names.
+- After joining, clean the result and verify it still stays under the requested destination root.
+- Add Windows-specific unit tests for `..\evil`, `subdir\\evil`, and `C:\evil`.
+
+6. Medium: audit logging silently loses integrity when writes or fsync fail
+Impact:
+- If the audit file hits disk-full, permissions change, an NFS-backed file errors, or `Sync` fails, the event is dropped with no error path, no metric, and no operator-visible signal.
+- That undermines the stated goal that audit logging is a durable, load-bearing record.
+Evidence:
+- `internal/audit/audit.go:101-107` ignores both `Write` and `Sync` errors.
+Suggested fix:
+- Change the audit interface so emitters can surface failures, or add a mandatory secondary error-reporting path.
+- At minimum, count and report write/fsync failures through the main logger or an exported metric.
+- If `-audit-log` is configured for security-sensitive deployments, consider an opt-in fail-closed mode.
+
+7. Low: interactive shell leaks one SIGWINCH goroutine per call
+Impact:
+- Every `Client.Shell()` call leaves behind a goroutine blocked on the `winch` channel after the session exits.
+- Long-running clients that repeatedly open interactive sessions will accumulate leaked goroutines.
+Evidence:
+- `internal/client/shell.go:57-67`
+- `signal.Stop` unregisters signal delivery, but it does not close the channel that the goroutine ranges over.
+Suggested fix:
+- Add a `done` channel or context and have the goroutine `select` on both `winch` and `done`.
+- Close `done` before returning from `Shell()`.
+
+8. Low: config parsing does not strip inline `#` comments
+Impact:
+- Common config lines like `Port 2222 # comment` or `IdentityFile ~/.ssh/id_ed25519 # main key` are parsed incorrectly.
+- This makes the advertised OpenSSH-compatible config subset more fragile than operators will expect.
+Evidence:
+- `internal/sshconfig/sshconfig.go:234-239` only removes full-line comments.
+- `internal/sshconfig/sshconfig.go:242-251` then consumes the trailing `# ...` as part of the value.
+Suggested fix:
+- Replace `stripComment` with a parser that removes unquoted trailing comments while preserving `#` inside quoted values.
+- Add regression tests for both `ssh_config` and `sshd_config` with inline comments.
+
+Overall assessment:
+- The core protocol handling, parser fuzzing, race coverage, and forwarding/session test coverage are stronger than average for a project of this size.
+- The highest-signal remaining problems are in boundary behavior and operational posture: default trust policy, handshake cancellation, remote-forward lifecycle/accounting, cross-platform SCP path handling, and audit-log failure handling.

@@ -50,7 +50,7 @@ Internal defaults that are *not* on the CLI:
 | `-t` | `false` | Force PTY for exec |
 | `-F` | — | Path to `ssh_config`-style file |
 | `-known-hosts` | `~/.ssh/known_hosts` | Override path |
-| `-strict-host-key` | `accept-new` | `yes` \| `accept-new` (TOFU) \| `no` |
+| `-strict-host-key` | `yes` | `yes` (refuse unknown, default) \| `accept-new` (TOFU) \| `no` (disabled) |
 
 ## `gossh-scp` flags
 

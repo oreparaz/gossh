@@ -393,8 +393,11 @@ func (s *Server) handle(ctx context.Context, nc net.Conn) {
 		}
 	}()
 
+	// Per-connection channel limiter, shared with the -R accept loops.
+	chSem := make(chan struct{}, s.cfg.MaxChannelsPerConn)
+
 	// Per-connection -R forwards registry. Closed when handle returns.
-	fwd := newRemoteForwards()
+	fwd := newRemoteForwards(chSem)
 	defer fwd.closeAll()
 
 	// Spin off global-request handler.
@@ -437,10 +440,8 @@ func (s *Server) handle(ctx context.Context, nc net.Conn) {
 		}()
 	}
 
-	// Per-connection channel limiter to bound resource use.
-	chSem := make(chan struct{}, s.cfg.MaxChannelsPerConn)
-
-	// Dispatch channels.
+	// Dispatch channels. (chSem is the per-connection channel cap,
+	// set up above and shared with acceptRemoteForward.)
 	for newCh := range chans {
 		select {
 		case <-ctx.Done():

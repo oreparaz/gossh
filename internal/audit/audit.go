@@ -78,11 +78,34 @@ func (nopLogger) Emit(Event) {}
 // If Fsync is true and Writer is an *os.File, Sync is called after
 // each event. This is expensive but necessary to survive a crash
 // with integrity.
+//
+// On Write or Sync failure the event is silently accepted by Emit
+// (Emit has no return value), but the failure is surfaced in three
+// ways an operator can observe:
+//   - `Failures()` returns the cumulative failed-write count.
+//   - If `OnError` is set, it is called for each failure with the
+//     underlying error and the event type. It runs while l.mu is
+//     held, so keep it short (or hand off to a channel).
+//   - If FailClosed is set to a non-nil callback, that callback
+//     is invoked on the first failure; callers can use it to
+//     terminate the server rather than continue unlogged.
 type JSONLogger struct {
-	Writer io.Writer
-	Fsync  bool
+	Writer     io.Writer
+	Fsync      bool
+	OnError    func(err error, eventType string) // optional, called on each failure
+	FailClosed func(err error)                   // optional, called once on first failure
 
-	mu sync.Mutex
+	mu            sync.Mutex
+	failures      uint64
+	failClosedRun bool
+}
+
+// Failures returns the cumulative number of Write/Sync errors since
+// the logger was created. Safe to call concurrently with Emit.
+func (l *JSONLogger) Failures() uint64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.failures
 }
 
 // Emit serialises e to a single JSON line.
@@ -95,16 +118,43 @@ func (l *JSONLogger) Emit(e Event) {
 	}
 	buf, err := json.Marshal(e)
 	if err != nil {
+		l.record(err, e.Type)
 		return
 	}
 	buf = append(buf, '\n')
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	_, _ = l.Writer.Write(buf)
+	if _, werr := l.Writer.Write(buf); werr != nil {
+		l.recordLocked(werr, e.Type)
+		return
+	}
 	if l.Fsync {
 		if f, ok := l.Writer.(*os.File); ok {
-			_ = f.Sync()
+			if serr := f.Sync(); serr != nil {
+				l.recordLocked(serr, e.Type)
+				return
+			}
 		}
+	}
+}
+
+// record takes l.mu and forwards to recordLocked.
+func (l *JSONLogger) record(err error, eventType string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.recordLocked(err, eventType)
+}
+
+// recordLocked increments the failure counter and invokes callbacks.
+// Caller must hold l.mu.
+func (l *JSONLogger) recordLocked(err error, eventType string) {
+	l.failures++
+	if l.OnError != nil {
+		l.OnError(err, eventType)
+	}
+	if l.FailClosed != nil && !l.failClosedRun {
+		l.failClosedRun = true
+		l.FailClosed(err)
 	}
 }
 

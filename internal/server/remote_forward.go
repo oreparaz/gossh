@@ -16,15 +16,21 @@ import (
 
 // remoteForwards tracks the listeners a single SSH connection has
 // opened via tcpip-forward global requests. All listeners are closed
-// when the connection closes.
+// when the connection closes. The chSem field is the per-connection
+// channel semaphore; server-initiated forwarded-tcpip channels
+// charge against it just like client-initiated channels.
 type remoteForwards struct {
 	mu        sync.Mutex
 	listeners map[string]net.Listener
 	closed    bool
+	chSem     chan struct{} // per-connection channel cap; shared with handle()
 }
 
-func newRemoteForwards() *remoteForwards {
-	return &remoteForwards{listeners: make(map[string]net.Listener)}
+func newRemoteForwards(chSem chan struct{}) *remoteForwards {
+	return &remoteForwards{
+		listeners: make(map[string]net.Listener),
+		chSem:     chSem,
+	}
 }
 
 func keyFor(host string, port uint32) string {
@@ -138,7 +144,13 @@ func (s *Server) doRemoteForward(ctx context.Context, conn *ssh.ServerConn, fwd 
 		return
 	}
 	actualPort := uint32(l.Addr().(*net.TCPAddr).Port)
-	if !fwd.add(body.BindAddr, body.BindPort, l) {
+	// Key the registry by the *assigned* port. The x/crypto/ssh
+	// client switches the local ssh.Listener to the assigned port
+	// and sends that port (not the originally-requested 0) in any
+	// later cancel-tcpip-forward request; so we must match on it.
+	// Two concurrent `-R 0:...` would also collide if we kept the
+	// requested port as the key.
+	if !fwd.add(body.BindAddr, actualPort, l) {
 		// Connection is shutting down; the listener was closed by add.
 		_ = req.Reply(false, nil)
 		return
@@ -155,7 +167,7 @@ func (s *Server) doRemoteForward(ctx context.Context, conn *ssh.ServerConn, fwd 
 		_ = req.Reply(true, nil)
 	}
 
-	go s.acceptRemoteForward(ctx, conn, body.BindAddr, actualPort, l, log)
+	go s.acceptRemoteForward(ctx, conn, body.BindAddr, actualPort, l, fwd.chSem, log)
 }
 
 // permitListenAllows is the -R counterpart of permitOpenAllows; the
@@ -179,14 +191,29 @@ func permitListenAllows(list []authkeys.HostPort, host string, port uint32) bool
 // acceptRemoteForward runs the accept loop for a -R listener. For
 // each inbound connection it opens a forwarded-tcpip channel back to
 // the client and splices data across.
-func (s *Server) acceptRemoteForward(ctx context.Context, conn *ssh.ServerConn, bindHost string, bindPort uint32, l net.Listener, log *slog.Logger) {
+//
+// chSem is the per-connection channel semaphore, shared with the
+// inbound `session` / `direct-tcpip` dispatch. Charging forwarded-
+// tcpip against the same cap prevents a flood of inbound traffic
+// on an -R listener from defeating MaxChannelsPerConn (audit #4).
+func (s *Server) acceptRemoteForward(ctx context.Context, conn *ssh.ServerConn, bindHost string, bindPort uint32, l net.Listener, chSem chan struct{}, log *slog.Logger) {
 	defer l.Close()
 	for {
 		c, err := l.Accept()
 		if err != nil {
 			return
 		}
+		// Non-blocking reservation — if the cap is already reached,
+		// drop the inbound connection. SSH clients routinely retry.
+		select {
+		case chSem <- struct{}{}:
+		default:
+			log.Warn("forwarded-tcpip dropped: per-connection channel cap reached")
+			_ = c.Close()
+			continue
+		}
 		go func() {
+			defer func() { <-chSem }()
 			origAddr, origPort := splitHostPort(c.RemoteAddr().String())
 			payload := ssh.Marshal(struct {
 				ConnectedAddr string

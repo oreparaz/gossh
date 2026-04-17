@@ -99,14 +99,39 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", addr, err)
 	}
-	// Note: we pass Host (not addr) so hostname-based verification
-	// keys off the user-supplied name, not the resolved IP.
+
+	// ssh.ClientConfig.Timeout only bounds TCP connect; a server
+	// that accepts TCP and then stalls can hang NewClientConn
+	// indefinitely. We bound the full handshake (banner + KEX +
+	// user-auth) with both a socket deadline and a ctx watcher
+	// that closes the socket on cancel.
+	handshakeDeadline := time.Now().Add(cfg.ConnectTimeout)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(handshakeDeadline) {
+		handshakeDeadline = dl
+	}
+	_ = nc.SetDeadline(handshakeDeadline)
+	handshakeDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = nc.Close()
+		case <-handshakeDone:
+		}
+	}()
+
 	hostForVerify := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
 	sshConn, chans, reqs, err := ssh.NewClientConn(nc, hostForVerify, clientCfg)
+	close(handshakeDone)
 	if err != nil {
 		_ = nc.Close()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("ssh handshake: %w (ctx: %v)", err, ctxErr)
+		}
 		return nil, fmt.Errorf("ssh handshake: %w", err)
 	}
+	// Handshake complete — clear the deadline; session I/O should
+	// not inherit it.
+	_ = nc.SetDeadline(time.Time{})
 	return &Client{conn: ssh.NewClient(sshConn, chans, reqs)}, nil
 }
 

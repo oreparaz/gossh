@@ -53,7 +53,7 @@ func run() (int, error) {
 		forceTTY      = flag.Bool("t", false, "force PTY allocation")
 		disableTTY    = flag.Bool("T", false, "disable PTY allocation")
 		noCommand     = flag.Bool("N", false, "do not execute a remote command (useful for forwarding)")
-		strict        = flag.String("strict-host-key", "accept-new", "ask (strict reject), yes (strict), accept-new (TOFU), no (off)")
+		strict        = flag.String("strict-host-key", "yes", "yes (refuse unknown hosts, the safe default), accept-new (TOFU), no (disable entirely)")
 		knownHostsArg = flag.String("known-hosts", "", "override known_hosts path")
 		configPath    = flag.String("F", "", "path to ssh_config (values override defaults, CLI overrides file)")
 	)

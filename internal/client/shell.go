@@ -53,15 +53,28 @@ func (c *Client) Shell() (int, error) {
 		return -1, fmt.Errorf("request pty: %w", err)
 	}
 
-	// Forward SIGWINCH as window-change.
+	// Forward SIGWINCH as window-change. signal.Stop alone is not
+	// enough to unblock `for range winch`: it un-registers signal
+	// delivery but does not close the channel. Add an explicit done
+	// channel and select on both so the goroutine actually exits
+	// when Shell() returns.
 	winch := make(chan os.Signal, 1)
 	signal.Notify(winch, syscall.SIGWINCH)
-	defer signal.Stop(winch)
+	winchDone := make(chan struct{})
+	defer func() {
+		signal.Stop(winch)
+		close(winchDone)
+	}()
 	go func() {
-		for range winch {
-			nw, nh, err := term.GetSize(stdinFd)
-			if err == nil {
-				_ = s.WindowChange(nh, nw)
+		for {
+			select {
+			case <-winch:
+				nw, nh, err := term.GetSize(stdinFd)
+				if err == nil {
+					_ = s.WindowChange(nh, nw)
+				}
+			case <-winchDone:
+				return
 			}
 		}
 	}()

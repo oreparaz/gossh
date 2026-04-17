@@ -231,12 +231,43 @@ func ParseServerFile(path string) (*ServerConfig, error) {
 	return ParseServer(f)
 }
 
+// stripComment removes a line's trailing comment. It drops the
+// portion from the first unquoted '#' to the end of the line, so
+// both OpenSSH full-line comments and the looser inline form like
+//
+//	Port 2222 # my ssh port
+//	IdentityFile "~/my key" # with a #hash in it
+//
+// parse the way an operator expects. Hashes inside a double-quoted
+// value are preserved. Backslash-escapes inside the quoted value
+// are honoured minimally (just `\"`).
 func stripComment(s string) string {
-	s = strings.TrimSpace(s)
-	if strings.HasPrefix(s, "#") {
+	// Fast path: trim whitespace, handle whole-line comments.
+	t := strings.TrimSpace(s)
+	if t == "" || strings.HasPrefix(t, "#") {
 		return ""
 	}
-	return s
+	inQuote := false
+	escape := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if escape {
+			escape = false
+			continue
+		}
+		if c == '\\' && inQuote {
+			escape = true
+			continue
+		}
+		if c == '"' {
+			inQuote = !inQuote
+			continue
+		}
+		if c == '#' && !inQuote {
+			return strings.TrimSpace(s[:i])
+		}
+	}
+	return strings.TrimSpace(s)
 }
 
 func parseKV(s string) (string, string, error) {

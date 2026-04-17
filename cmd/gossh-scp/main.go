@@ -46,7 +46,7 @@ func run() error {
 		port          = flag.Int("p", 22, "remote port")
 		login         = flag.String("l", "", "remote username (overrides user@host)")
 		identities    multiFlag
-		strictArg     = flag.String("strict-host-key", "accept-new", "ask|yes|accept-new|no")
+		strictArg     = flag.String("strict-host-key", "yes", "yes (default, refuse unknown) | accept-new (TOFU) | no (disable)")
 		knownHostsArg = flag.String("known-hosts", "", "override known_hosts path")
 		connTimeout   = flag.Duration("connect-timeout", 10*time.Second, "")
 	)

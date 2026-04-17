@@ -231,13 +231,48 @@ func parseCLine(line string) (os.FileMode, int64, string, error) {
 		return 0, 0, "", fmt.Errorf("bad size %q", parts[1])
 	}
 	name := parts[2]
-	// Sanity-check the name: no path separators, no ".." traversal.
-	// This closes CVE-2019-6111-style attacks where a malicious
-	// server tries to have us write to arbitrary paths.
-	if strings.ContainsAny(name, "/\x00") || name == "" || name == "." || name == ".." {
-		return 0, 0, "", fmt.Errorf("unsafe filename %q in C-line", name)
+	if err := validateSCPFilename(name); err != nil {
+		return 0, 0, "", err
 	}
 	return os.FileMode(mode), size, name, nil
+}
+
+// validateSCPFilename enforces that a C-line filename sent by the
+// remote cannot escape the local destination directory. This is the
+// cross-platform generalisation of the CVE-2019-6111 guard:
+//
+//   - POSIX separator "/" is always rejected (catches most attacks).
+//   - NUL is rejected.
+//   - Windows-specific characters "\", leading drive letters
+//     (e.g. "C:evil"), and UNC prefixes ("\\host\share") are also
+//     rejected so a Windows client using this package is safe even
+//     though filepath.Join on Windows would happily interpret them.
+//   - The bare names "." and ".." are rejected.
+//   - Empty or excessively long names are rejected.
+var errUnsafeName = errors.New("scp: unsafe filename in C-line")
+
+func validateSCPFilename(name string) error {
+	if name == "" || len(name) > 255 {
+		return fmt.Errorf("%w: length", errUnsafeName)
+	}
+	if name == "." || name == ".." {
+		return fmt.Errorf("%w: %q", errUnsafeName, name)
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c == '/' || c == '\\' || c == 0 {
+			return fmt.Errorf("%w: contains separator or NUL", errUnsafeName)
+		}
+	}
+	// Windows drive-letter prefix "X:..." where the rest would be a
+	// drive-relative path. Even a bare "C:" is dangerous.
+	if len(name) >= 2 && name[1] == ':' {
+		c := name[0]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+			return fmt.Errorf("%w: drive-letter prefix", errUnsafeName)
+		}
+	}
+	return nil
 }
 
 // parseCLineName is a convenience that returns just the name; errors
