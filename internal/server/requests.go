@@ -96,6 +96,11 @@ func takeString(p []byte) (string, []byte, error) {
 // we propagate to child processes. Anything else is silently dropped.
 // OpenSSH uses AcceptEnv; we hard-code the common safe set because
 // user-supplied environment is a well-known injection vector.
+//
+// Names must be non-empty, may only contain [A-Z0-9_], must start
+// with a letter or underscore, and must appear in the allowlist.
+// The character-set check rules out injection via '=' or shell
+// metacharacters in the NAME (the VALUE is always passed verbatim).
 func isSafeEnvName(name string) bool {
 	if name == "" {
 		return false
