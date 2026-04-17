@@ -7,11 +7,15 @@ import (
 )
 
 // PTYRequest is the parsed RFC-4254 §6.2 pty-req payload.
+//
+// Only the fields the server actually forwards to the pty are kept:
+// Term (for $TERM) and Cols/Rows (for the winsize ioctl). The
+// pixel-dimension fields and the termios-modes blob are parsed by
+// the RFC but we have no consumer for them — storing them would
+// just invite misuse.
 type PTYRequest struct {
-	Term          string
-	Cols, Rows    uint32
-	Width, Height uint32 // pixel dimensions; usually 0
-	TerminalModes []byte
+	Term       string
+	Cols, Rows uint32
 }
 
 // parseStringRequest reads a single SSH string from req.Payload.
@@ -40,7 +44,9 @@ func parseEnvRequest(p []byte) (name, value string, err error) {
 	return name, value, nil
 }
 
-// parsePTYReq parses an RFC-4254 pty-req payload.
+// parsePTYReq parses an RFC-4254 pty-req payload. The pixel-size
+// and terminal-modes fields are present in the wire format but we
+// ignore them — see PTYRequest doc.
 func parsePTYReq(p []byte) (PTYRequest, error) {
 	term, p, err := takeString(p)
 	if err != nil {
@@ -49,35 +55,22 @@ func parsePTYReq(p []byte) (PTYRequest, error) {
 	if len(p) < 16 {
 		return PTYRequest{}, errors.New("pty-req: short payload")
 	}
-	cols := binary.BigEndian.Uint32(p[0:4])
-	rows := binary.BigEndian.Uint32(p[4:8])
-	w := binary.BigEndian.Uint32(p[8:12])
-	h := binary.BigEndian.Uint32(p[12:16])
-	modes, _, err := takeString(p[16:])
-	if err != nil {
-		// Some clients omit the modes string entirely.
-		modes = ""
-	}
 	return PTYRequest{
-		Term:          term,
-		Cols:          cols,
-		Rows:          rows,
-		Width:         w,
-		Height:        h,
-		TerminalModes: []byte(modes),
+		Term: term,
+		Cols: binary.BigEndian.Uint32(p[0:4]),
+		Rows: binary.BigEndian.Uint32(p[4:8]),
 	}, nil
 }
 
 // parseWindowChange parses a "window-change" payload (four uint32).
+// Only Cols/Rows survive; pixel dimensions are discarded.
 func parseWindowChange(p []byte) (PTYRequest, error) {
 	if len(p) < 16 {
 		return PTYRequest{}, errors.New("window-change: short payload")
 	}
 	return PTYRequest{
-		Cols:   binary.BigEndian.Uint32(p[0:4]),
-		Rows:   binary.BigEndian.Uint32(p[4:8]),
-		Width:  binary.BigEndian.Uint32(p[8:12]),
-		Height: binary.BigEndian.Uint32(p[12:16]),
+		Cols: binary.BigEndian.Uint32(p[0:4]),
+		Rows: binary.BigEndian.Uint32(p[4:8]),
 	}, nil
 }
 

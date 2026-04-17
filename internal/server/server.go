@@ -880,7 +880,7 @@ func posixSignal(name string) (syscall.Signal, bool) {
 	return 0, false
 }
 
-type winSize struct{ Rows, Cols, Width, Height uint32 }
+type winSize struct{ Rows, Cols uint32 }
 
 func (st *sessionState) handleRequest(req *ssh.Request) {
 	ok := false
@@ -955,7 +955,7 @@ func (st *sessionState) handleRequest(req *ssh.Request) {
 			pr, perr := parseWindowChange(req.Payload)
 			if perr == nil {
 				select {
-				case st.resize <- winSize{Rows: pr.Rows, Cols: pr.Cols, Width: pr.Width, Height: pr.Height}:
+				case st.resize <- winSize{Rows: pr.Rows, Cols: pr.Cols}:
 				default:
 				}
 				ok = true

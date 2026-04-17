@@ -49,7 +49,6 @@ func run() error {
 		allowPTY     = flag.Bool("allow-pty", true, "accept PTY allocation")
 		allowLF      = flag.Bool("allow-local-forward", false, "accept direct-tcpip channels (-L)")
 		allowRF      = flag.Bool("allow-remote-forward", false, "accept tcpip-forward requests (-R)")
-		reloadAk     = flag.Bool("reload-authorized-keys", true, "re-read authorized_keys on each auth when its mtime changes")
 		loginGrace   = flag.Duration("login-grace", 120*time.Second, "max time to complete authentication")
 		maxAuth      = flag.Int("max-auth-tries", 6, "max public-key offers before disconnect")
 		maxPerIP     = flag.Int("max-per-ip", 10, "concurrent connections per remote IP (0 = unlimited)")
@@ -145,13 +144,10 @@ func run() error {
 	cfg := server.Config{
 		ListenAddr: *listen,
 		HostKeys:   signers,
-		AuthorizedKeys: func() server.AuthorizedKeysFunc {
-			if *reloadAk {
-				return server.ReloadingAuthorizedKeys(*authKeysPath)
-			}
-			entries, _ := authkeys.ParseFile(*authKeysPath)
-			return server.StaticAuthorizedKeys(entries)
-		}(),
+		// Always reload on mtime change — a revoked key must stop
+		// working without a server restart. There is no operator
+		// value in a "static, never reload" mode.
+		AuthorizedKeys:      server.ReloadingAuthorizedKeys(*authKeysPath),
 		Shell:               *shell,
 		AllowExec:           *allowExec,
 		AllowPTY:            *allowPTY,
