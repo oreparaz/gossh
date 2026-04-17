@@ -47,18 +47,39 @@ the automated check.
   slow clients are dropped.
 - **Max auth tries** (`-max-auth-tries`, default 6).
 - **Per-IP concurrent connection cap** (`-max-per-ip`, default 10).
+- **Global concurrent connection cap** (`-max-connections`, 0 = off).
+- **Per-connection channel cap** (default 64): bounds session/forward fan-out.
+- **Keepalive prober** (`-client-alive-interval`, `-client-alive-count-max`):
+  drops half-dead TCPs before they accumulate.
+- **Graceful shutdown** (`-shutdown-grace`, default 10s): listener
+  closes on SIGTERM; in-flight sessions get the grace period, then
+  the SSH connection is closed forcibly.
 - **authorized_keys permissions check**: group- or world-writable
   files are rejected at startup.
+- **authorized_keys option whitelist**: unknown keywords are
+  rejected (typo in `command=` can't silently disable it).
 - **Private key permission check**: world- or group-readable host
   key files are rejected on load.
 - **RSA minimum size 3072 bits** at both generation and load.
-- **`restrict`, `command=`, `from=`, `permitopen=`, `permitlisten=`,
-  `no-port-forwarding`** are all enforced by the server; the
-  `authkeys` package tests exercise them.
-- **env allowlist**: clients may set TERM, LANG, LC_* — nothing
-  else gets into the child environment.
+- **Enforced authorized_keys options**: `restrict`, `command=`,
+  `from=` (pattern list with CIDR / wildcard / negation),
+  `permitopen=`, `permitlisten=`, `environment=`, `no-pty`,
+  `no-port-forwarding`. Each has an end-to-end test exercising the
+  rejection path.
+- **env allowlist from client**: clients may set TERM, LANG, LC_*
+  only. Everything else is dropped. Capped at 64 vars per session,
+  rejected after exec to avoid racing the runner.
 - **Forwarding disabled by default.** `-L` needs `-allow-local-forward`,
   `-R` needs `-allow-remote-forward`.
+- **Process-group signaling**: SSH "signal" requests are delivered
+  to the whole child process group (via Setsid/Setpgid), so inner
+  commands run by the shell actually receive the signal.
+- **Panic recovery** on every per-connection and per-session goroutine;
+  one bad session can't kill the whole server.
+- **Audit log** via `-audit-log`: JSON Lines, covers auth, session,
+  forward open/close, keepalive timeouts, shutdown. See `docs/audit.md`.
+
+## Client hardening
 
 ## Client hardening
 
