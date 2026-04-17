@@ -139,6 +139,43 @@ func TestAuthorizedKeysEnvironmentApplied(t *testing.T) {
 	}
 }
 
+// TestAuthorizedKeysEnvironmentNoShellInjection confirms that an env
+// value containing shell metacharacters is passed verbatim, not
+// interpreted. The value becomes the env var's literal contents.
+func TestAuthorizedKeysEnvironmentNoShellInjection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	// An attacker-controlled authorized_keys (via compromised admin)
+	// still cannot trigger shell injection just by setting env —
+	// the value lands as a literal env var, not as interpreted code.
+	// We send 'evil $(touch /tmp/pwn)' and confirm it's a literal
+	// string, with no command substitution.
+	pwnFile := "/tmp/gossh-pwn-" + t.Name()
+	_ = os.Remove(pwnFile)
+	defer os.Remove(pwnFile)
+
+	// Note: options are comma-separated; the value itself can contain
+	// double-quotes if escaped, but we keep it simple here.
+	opts := fmt.Sprintf(`environment="PWN=evil; touch %s"`, pwnFile)
+	h := buildCustomRig(t, opts)
+
+	cmd := h.sshCmd(t, nil, `printf "[%s]\n" "$PWN"`)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("ssh: %v\n%s", err, out)
+	}
+	// The literal value must include the shell metachars unescaped.
+	if !strings.Contains(string(out), fmt.Sprintf("[evil; touch %s]", pwnFile)) {
+		t.Fatalf("env value mis-handled: %q", out)
+	}
+	// The file must NOT have been created by a command-substitution
+	// bug.
+	if _, err := os.Stat(pwnFile); err == nil {
+		t.Fatalf("unexpected file creation at %s — injection detected", pwnFile)
+	}
+}
+
 func TestForcedCommand(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration")
