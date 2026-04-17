@@ -228,6 +228,33 @@ stderr at INFO level.
 **Fix:** downgrade to DEBUG. The audit log still records every
 `handshake.fail` event for security correlation.
 
+### 24. `scp.parseCLine` panic on empty string (found by fuzz)
+
+`parseCLine("")` did `line[1:]` without length check and indexed
+out of range. Not reachable from a well-formed remote `scp -f`
+but reachable from a hostile / buggy one.
+
+**Fix:** length + prefix-byte check at the top. Found by
+`FuzzParseCLine` seed #13 on first run.
+
+### 25. `knownhosts.Append` panic on nil `remote net.Addr` (found by fuzz)
+
+Passing `remote == nil` to `Append` caused `x/crypto/ssh/knownhosts`
+to NPE deep inside `hostKeyDB.check`. A misuse by a library
+consumer that shouldn't have crashed the process.
+
+**Fix:** substitute a `placeholderAddr` before the stdlib call.
+Found by `FuzzAppend` after ~30s.
+
+### 26. `direct-tcpip` 10s dial timeout hard-coded
+
+Fuzzing surfaced that the 10s `net.Dialer` timeout was not
+configurable; under heavy channel churn this multiplies into
+long per-connection latency.
+
+**Fix:** `Config.DirectTCPIPDialTimeout` field; tests (and any
+operator wanting a tighter bound) can override.
+
 ### 23. `sshd_config` silently accepted contradictory values
 
 Values like `PermitRootLogin=weird` were parsed without validation.
