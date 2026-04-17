@@ -171,6 +171,48 @@ func TestClientRejectsUnknownHostInStrictMode(t *testing.T) {
 	}
 }
 
+// TestClientRejectsHostKeyMismatch simulates MITM: client has a
+// known_hosts entry with a different host key than the server
+// actually presents. The client must refuse and not TOFU over it.
+func TestClientRejectsHostKeyMismatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	r := startGosshd(t)
+
+	// Build a known_hosts that points our server's address to a
+	// DIFFERENT ed25519 key.
+	dir := t.TempDir()
+	fakeKeyPath := filepath.Join(dir, "fake")
+	fk, err := hostkey.LoadOrGenerate(fakeKeyPath, hostkey.Ed25519, 0, "fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kh := filepath.Join(dir, "known_hosts")
+	line := fmt.Sprintf("[127.0.0.1]:%d %s", r.Port, ssh.MarshalAuthorizedKey(fk.Signer.PublicKey()))
+	if err := os.WriteFile(kh, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err = client.Dial(ctx, client.Config{
+		Host:           r.Host,
+		Port:           r.Port,
+		User:           "testuser",
+		IdentityFiles:  []string{r.UserKeyPath},
+		KnownHostsPath: kh,
+		HostCheckMode:  knownhosts.TOFU, // must still reject
+	})
+	if err == nil {
+		t.Fatal("expected host-key mismatch to be fatal")
+	}
+	if !strings.Contains(err.Error(), "mismatch") && !strings.Contains(err.Error(), "key") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestClientTOFUWritesHost(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration")
