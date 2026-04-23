@@ -13,6 +13,7 @@ Host tricky
     User alice
     IdentityFile ~/.ssh/id_alice_ed25519
     IdentityFile ~/.ssh/id_alice_rsa
+    ProxyCommand aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p
 
 Host *
     Port 22
@@ -42,6 +43,10 @@ func TestParseClient(t *testing.T) {
 	}
 	if h.StrictHost != "accept-new" {
 		t.Fatalf("strict=%q", h.StrictHost)
+	}
+	const wantProxy = "aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p"
+	if h.ProxyCommand != wantProxy {
+		t.Fatalf("proxycommand=%q", h.ProxyCommand)
 	}
 
 	// Unknown host falls back to the "*" block.

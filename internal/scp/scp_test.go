@@ -93,7 +93,7 @@ func TestSCPUpload(t *testing.T) {
 	}
 
 	remotePath := filepath.Join(r.userDir, "uploaded.bin")
-	if err := scp.Upload(c.Raw(), localPath, remotePath); err != nil {
+	if err := scp.Upload(c.Raw(), localPath, remotePath, false); err != nil {
 		t.Fatalf("upload: %v", err)
 	}
 	got, err := os.ReadFile(remotePath)
@@ -126,7 +126,7 @@ func TestSCPDownload(t *testing.T) {
 	}
 
 	localPath := filepath.Join(r.userDir, "downloaded.bin")
-	if err := scp.Download(c.Raw(), remotePath, localPath); err != nil {
+	if err := scp.Download(c.Raw(), remotePath, localPath, false); err != nil {
 		t.Fatalf("download: %v", err)
 	}
 	got, err := os.ReadFile(localPath)
@@ -159,7 +159,7 @@ func TestSCPUploadMissingLocalFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	err = scp.Upload(c.Raw(), "/nonexistent/nope", "/tmp/anywhere")
+	err = scp.Upload(c.Raw(), "/nonexistent/nope", "/tmp/anywhere", false)
 	if err == nil {
 		t.Fatal("expected error on missing local source")
 	}

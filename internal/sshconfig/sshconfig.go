@@ -25,6 +25,7 @@ type ClientHost struct {
 	IdentityFiles []string
 	StrictHost    string // "yes" / "accept-new" / "no"
 	KnownHosts    string
+	ProxyCommand  string // verbatim, with unexpanded %h/%p/%r tokens
 }
 
 // ClientConfig is the parsed ssh_config: a list of Host sections,
@@ -76,6 +77,7 @@ func (c *ClientConfig) ResolveHost(host string) ClientHost {
 	out.IdentityFiles = identities
 	out.StrictHost = merged["stricthostkeychecking"]
 	out.KnownHosts = expandUser(merged["userknownhostsfile"])
+	out.ProxyCommand = merged["proxycommand"]
 	return out
 }
 
@@ -258,15 +260,27 @@ func stripComment(s string) string {
 }
 
 func parseKV(s string) (string, string, error) {
-	// Accept "key value", "key=value", and "key\tvalue".
-	if eq := strings.IndexByte(s, '='); eq > 0 {
-		return strings.TrimSpace(s[:eq]), strings.TrimSpace(s[eq+1:]), nil
+	// The keyword is the first whitespace- or '='-delimited token.
+	// After it, '=' (optionally surrounded by whitespace) separates
+	// key from value; otherwise whitespace does. Crucially, a '='
+	// INSIDE the value (e.g. "ProxyCommand ... portNumber=%p") must
+	// not be treated as the separator.
+	i := 0
+	for i < len(s) && s[i] != ' ' && s[i] != '\t' && s[i] != '=' {
+		i++
 	}
-	fields := strings.Fields(s)
-	if len(fields) < 2 {
-		return "", "", fmt.Errorf("no value for key %q", s)
+	if i == 0 {
+		return "", "", fmt.Errorf("no key in %q", s)
 	}
-	return fields[0], strings.TrimSpace(s[len(fields[0]):]), nil
+	key := s[:i]
+	rest := strings.TrimLeft(s[i:], " \t")
+	if strings.HasPrefix(rest, "=") {
+		rest = strings.TrimLeft(rest[1:], " \t")
+	}
+	if rest == "" {
+		return "", "", fmt.Errorf("no value for key %q", key)
+	}
+	return key, rest, nil
 }
 
 func truthy(s string) bool {

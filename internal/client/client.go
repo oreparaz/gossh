@@ -29,6 +29,10 @@ type Config struct {
 	KnownHostsPath string
 	HostCheckMode  knownhosts.Mode
 	ConnectTimeout time.Duration
+	// ProxyCommand, if set, is executed via `sh -c` and its stdio is
+	// used in place of a direct TCP dial. %h/%p/%r tokens are
+	// expanded against Host/Port/User before exec.
+	ProxyCommand string
 }
 
 // clientVersion is the SSH banner this client advertises. It is
@@ -91,13 +95,6 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
 
-	// Dial with context so ctx cancel cancels the connect.
-	d := net.Dialer{Timeout: cfg.ConnectTimeout}
-	nc, err := d.DialContext(ctx, "tcp", addr)
-	if err != nil {
-		return nil, fmt.Errorf("dial %s: %w", addr, err)
-	}
-
 	// ssh.ClientConfig.Timeout only bounds TCP connect; a server
 	// that accepts TCP and then stalls can hang NewClientConn
 	// indefinitely. We bound the full handshake (banner + KEX +
@@ -107,7 +104,25 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 	if dl, ok := ctx.Deadline(); ok && dl.Before(handshakeDeadline) {
 		handshakeDeadline = dl
 	}
-	_ = nc.SetDeadline(handshakeDeadline)
+
+	var nc net.Conn
+	if cfg.ProxyCommand != "" {
+		expanded, xerr := expandProxyTokens(cfg.ProxyCommand, cfg.Host, cfg.Port, cfg.User)
+		if xerr != nil {
+			return nil, xerr
+		}
+		nc, err = dialProxyCommand(ctx, expanded, cfg.Host, cfg.Port, handshakeDeadline)
+		if err != nil {
+			return nil, fmt.Errorf("proxy command: %w", err)
+		}
+	} else {
+		d := net.Dialer{Timeout: cfg.ConnectTimeout}
+		nc, err = d.DialContext(ctx, "tcp", addr)
+		if err != nil {
+			return nil, fmt.Errorf("dial %s: %w", addr, err)
+		}
+		_ = nc.SetDeadline(handshakeDeadline)
+	}
 	handshakeDone := make(chan struct{})
 	go func() {
 		select {

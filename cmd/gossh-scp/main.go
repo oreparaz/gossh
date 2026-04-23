@@ -45,6 +45,8 @@ func run() error {
 		knownHostsArg = flag.String("known-hosts", "", "override known_hosts path")
 		configPath    = flag.String("F", "", "path to ssh_config (default: ~/.ssh/config if present)")
 		connTimeout   = flag.Duration("connect-timeout", 10*time.Second, "")
+		recursive     = flag.Bool("r", false, "recursively copy directory trees")
+		proxyCmd      = flag.String("proxy-command", "", "ProxyCommand: shell command to tunnel the SSH transport (supports %h/%p/%r)")
 	)
 	flag.Var(&identities, "i", "path to identity file (repeatable)")
 	flag.Parse()
@@ -126,6 +128,10 @@ func run() error {
 	if cfgHost.StrictHost != "" && !cliutil.FlagSet("strict-host-key") {
 		strictVal = cfgHost.StrictHost
 	}
+	proxyCmdVal := *proxyCmd
+	if proxyCmdVal == "" && cfgHost.ProxyCommand != "" {
+		proxyCmdVal = cfgHost.ProxyCommand
+	}
 
 	mode, err := cliutil.ParseStrictHostKey(strictVal)
 	if err != nil {
@@ -143,6 +149,7 @@ func run() error {
 		KnownHostsPath: knownHostsVal,
 		HostCheckMode:  mode,
 		ConnectTimeout: *connTimeout,
+		ProxyCommand:   proxyCmdVal,
 	})
 	if err != nil {
 		return err
@@ -150,9 +157,9 @@ func run() error {
 	defer c.Close()
 
 	if upload {
-		return scp.Upload(c.Raw(), local, remote)
+		return scp.Upload(c.Raw(), local, remote, *recursive)
 	}
-	return scp.Download(c.Raw(), remote, local)
+	return scp.Download(c.Raw(), remote, local, *recursive)
 }
 
 // splitRemote: if s contains a colon outside an IPv6 bracket, split

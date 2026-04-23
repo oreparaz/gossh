@@ -50,6 +50,7 @@ func run() (int, error) {
 		strict        = flag.String("strict-host-key", "yes", "yes (default, refuse unknown) | accept-new (TOFU)")
 		knownHostsArg = flag.String("known-hosts", "", "override known_hosts path")
 		configPath    = flag.String("F", "", "path to ssh_config (values override defaults, CLI overrides file)")
+		proxyCmd      = flag.String("proxy-command", "", "ProxyCommand: shell command to tunnel the SSH transport (supports %h/%p/%r)")
 	)
 	flag.Var(&identities, "i", "path to identity file (repeatable)")
 	flag.Var(&locals, "L", "local forward: [bind:]port:host:hostport (repeatable)")
@@ -114,6 +115,10 @@ func run() (int, error) {
 	if knownHostsVal == "" && cfgHost.KnownHosts != "" {
 		knownHostsVal = cfgHost.KnownHosts
 	}
+	proxyCmdVal := *proxyCmd
+	if proxyCmdVal == "" && cfgHost.ProxyCommand != "" {
+		proxyCmdVal = cfgHost.ProxyCommand
+	}
 
 	mode, err := cliutil.ParseStrictHostKey(strictVal)
 	if err != nil {
@@ -127,6 +132,7 @@ func run() (int, error) {
 		IdentityFiles:  identities,
 		KnownHostsPath: knownHostsVal,
 		HostCheckMode:  mode,
+		ProxyCommand:   proxyCmdVal,
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

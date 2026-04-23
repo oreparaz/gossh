@@ -3,10 +3,12 @@
 // remote `scp -t` (sink, for upload) or `scp -f` (source, for
 // download) process spawned via an SSH exec request.
 //
-// We implement single-file transfers only (no recursion, no
-// directories). That covers the 90% use case and keeps the
-// attack-surface tiny — SCP's known CVEs come almost exclusively
-// from recursive-mode path handling.
+// Both single-file and recursive transfers are supported. Recursion
+// has historically been the source of most SCP CVEs (filename
+// injection escaping the destination directory), so every directory
+// and file name received from the remote goes through
+// validateSCPFilename; depth is capped at MaxRecursionDepth;
+// symlinks on the local side are skipped on upload.
 package scp
 
 import (
@@ -22,21 +24,21 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// Upload copies the local file at srcPath to the remote path dst via
-// the SSH session. The remote side must run `scp -t <parent>` — in
-// practice, we exec it ourselves below.
-func Upload(client *ssh.Client, srcPath, dstPath string) error {
-	f, err := os.Open(srcPath)
+// MaxRecursionDepth bounds how deep a recursive transfer will go.
+// A malicious remote can't walk us past this; a friendly remote
+// that legitimately has deeper trees can bump it if needed.
+const MaxRecursionDepth = 64
+
+// Upload copies the local path to the remote dst via SSH. If srcPath
+// is a directory, recursive must be true — otherwise the call errors
+// loudly instead of silently skipping the tree.
+func Upload(client *ssh.Client, srcPath, dstPath string, recursive bool) error {
+	info, err := os.Lstat(srcPath)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return err
-	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("scp upload: %s is not a regular file", srcPath)
+	if info.IsDir() && !recursive {
+		return fmt.Errorf("scp upload: %s is a directory (use -r)", srcPath)
 	}
 
 	session, err := client.NewSession()
@@ -58,14 +60,26 @@ func Upload(client *ssh.Client, srcPath, dstPath string) error {
 		return err
 	}
 
-	// The remote scp -t expects a parent directory as arg and learns
-	// the filename from our C-line. If dst ends with a slash or is
-	// a directory-only path, use it verbatim; otherwise split.
-	remoteDir, remoteName := splitRemote(dstPath)
-	if remoteName == "" {
-		remoteName = filepath.Base(srcPath)
+	// For a directory upload dstPath is the receiving parent and the
+	// top-level D-line carries basename(srcPath) — matching OpenSSH
+	// scp -r semantics (contents go into dstPath/basename(src)/).
+	// For a file upload dstPath may be either a directory or a full
+	// file path; splitRemote separates the two cases.
+	var remoteTarget, topName string
+	if info.IsDir() {
+		remoteTarget = dstPath
+		topName = filepath.Base(srcPath)
+	} else {
+		remoteTarget, topName = splitRemote(dstPath)
+		if topName == "" {
+			topName = filepath.Base(srcPath)
+		}
 	}
-	if err := session.Start(fmt.Sprintf("scp -qt %s", shellQuote(remoteDir))); err != nil {
+	remoteArgs := "-qt"
+	if recursive {
+		remoteArgs = "-qrt"
+	}
+	if err := session.Start(fmt.Sprintf("scp %s %s", remoteArgs, shellQuote(remoteTarget))); err != nil {
 		return err
 	}
 
@@ -73,34 +87,104 @@ func Upload(client *ssh.Client, srcPath, dstPath string) error {
 	if err := readAck(r, stderr); err != nil {
 		return fmt.Errorf("initial ack: %w", err)
 	}
-	// Send C-line: C<mode> <size> <name>\n
-	mode := info.Mode().Perm()
+
+	if info.IsDir() {
+		if err := uploadTree(stdin, r, stderr, srcPath, topName, 0); err != nil {
+			return err
+		}
+	} else {
+		if err := uploadFile(stdin, r, stderr, srcPath, topName, info); err != nil {
+			return err
+		}
+	}
+	_ = stdin.Close()
+	return session.Wait()
+}
+
+// uploadFile emits a single C-line + payload for one regular file.
+// Non-regular entries (symlinks, sockets, devices) are skipped rather
+// than errored, so a tree with a stray broken symlink still transfers
+// — matching OpenSSH scp -r behavior.
+func uploadFile(stdin io.Writer, r *bufio.Reader, stderr io.Reader, srcPath, remoteName string, info os.FileInfo) error {
+	if !info.Mode().IsRegular() {
+		return nil
+	}
+	f, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	mode := info.Mode().Perm() &^ 0o7000 // strip setuid/setgid/sticky
 	header := fmt.Sprintf("C%04o %d %s\n", mode, info.Size(), remoteName)
 	if _, err := io.WriteString(stdin, header); err != nil {
 		return err
 	}
 	if err := readAck(r, stderr); err != nil {
-		return fmt.Errorf("header ack: %w", err)
+		return fmt.Errorf("header ack for %s: %w", remoteName, err)
 	}
-	// Stream content.
-	if _, err := io.Copy(stdin, f); err != nil {
+	if _, err := io.CopyN(stdin, f, info.Size()); err != nil {
 		return err
 	}
-	// Trailing zero-byte (end-of-file marker per SCP).
 	if _, err := stdin.Write([]byte{0}); err != nil {
 		return err
 	}
-	if err := readAck(r, stderr); err != nil {
-		return fmt.Errorf("content ack: %w", err)
-	}
-	// Close stdin → remote scp -t sees EOF, exits.
-	_ = stdin.Close()
-	return session.Wait()
+	return readAck(r, stderr)
 }
 
-// Download copies the remote file at srcPath to dstPath on the
-// local host.
-func Download(client *ssh.Client, srcPath, dstPath string) error {
+// uploadTree walks localDir depth-first, emitting D/E around each
+// directory and C for each regular file. remoteName is the name of
+// localDir on the remote side (at the current level).
+func uploadTree(stdin io.Writer, r *bufio.Reader, stderr io.Reader, localDir, remoteName string, depth int) error {
+	if depth > MaxRecursionDepth {
+		return fmt.Errorf("scp: recursion deeper than %d levels at %s", MaxRecursionDepth, localDir)
+	}
+	info, err := os.Stat(localDir)
+	if err != nil {
+		return err
+	}
+	mode := info.Mode().Perm() &^ 0o7000
+	if _, err := fmt.Fprintf(stdin, "D%04o 0 %s\n", mode, remoteName); err != nil {
+		return err
+	}
+	if err := readAck(r, stderr); err != nil {
+		return fmt.Errorf("dir ack for %s: %w", remoteName, err)
+	}
+
+	entries, err := os.ReadDir(localDir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		entryPath := filepath.Join(localDir, e.Name())
+		entryInfo, err := os.Lstat(entryPath)
+		if err != nil {
+			return err
+		}
+		switch {
+		case entryInfo.IsDir():
+			if err := uploadTree(stdin, r, stderr, entryPath, e.Name(), depth+1); err != nil {
+				return err
+			}
+		case entryInfo.Mode().IsRegular():
+			if err := uploadFile(stdin, r, stderr, entryPath, e.Name(), entryInfo); err != nil {
+				return err
+			}
+		default:
+			// Skip special files (symlinks, sockets, devices).
+			continue
+		}
+	}
+	if _, err := io.WriteString(stdin, "E\n"); err != nil {
+		return err
+	}
+	return readAck(r, stderr)
+}
+
+// Download copies the remote path to the local dstPath. Pass
+// recursive=true to pull a directory tree; a single file is fine
+// either way. When recursive is true and dstPath does not exist,
+// it is created as a directory at the top level.
+func Download(client *ssh.Client, srcPath, dstPath string, recursive bool) error {
 	session, err := client.NewSession()
 	if err != nil {
 		return err
@@ -120,70 +204,187 @@ func Download(client *ssh.Client, srcPath, dstPath string) error {
 		return err
 	}
 
-	if err := session.Start(fmt.Sprintf("scp -qf %s", shellQuote(srcPath))); err != nil {
+	remoteArgs := "-qf"
+	if recursive {
+		remoteArgs = "-qrf"
+	}
+	if err := session.Start(fmt.Sprintf("scp %s %s", remoteArgs, shellQuote(srcPath))); err != nil {
 		return err
 	}
 
 	r := bufio.NewReader(stdout)
-	// Signal ready.
-	if _, err := stdin.Write([]byte{0}); err != nil {
-		return err
-	}
-	line, err := r.ReadString('\n')
-	if err != nil {
-		// Drain stderr for a more useful error.
-		errMsg, _ := io.ReadAll(stderr)
-		return fmt.Errorf("read header: %w: %s", err, strings.TrimSpace(string(errMsg)))
-	}
-	line = strings.TrimRight(line, "\n")
-	if len(line) == 0 || line[0] != 'C' {
-		errMsg, _ := io.ReadAll(stderr)
-		return fmt.Errorf("expected C-line, got %q: %s", line, strings.TrimSpace(string(errMsg)))
-	}
-	mode, size, rn, err := parseCLine(line)
-	if err != nil {
-		return err
-	}
-	// Ack the C-line.
 	if _, err := stdin.Write([]byte{0}); err != nil {
 		return err
 	}
 
-	// If dstPath is a directory, write into it using the remote name
-	// (already validated by parseCLine, so path-traversal is
-	// impossible here).
-	localTarget := dstPath
-	if fi, err := os.Stat(dstPath); err == nil && fi.IsDir() {
-		if rn == "" {
-			rn = filepath.Base(srcPath)
+	st := &receiverState{
+		stdin:        stdin,
+		stderr:       stderr,
+		r:            r,
+		pathStack:    []string{dstPath},
+		fallbackName: filepath.Base(srcPath),
+	}
+	if err := st.run(); err != nil {
+		return err
+	}
+	_ = stdin.Close()
+	return session.Wait()
+}
+
+type receiverState struct {
+	stdin        io.Writer
+	stderr       io.Reader
+	r            *bufio.Reader
+	pathStack    []string // pathStack[len-1] is the current local directory
+	fallbackName string   // used when remote sends an empty C-line name at the root
+	pendingT     bool     // a T-line was just ack'd; the next directive must be C or D
+}
+
+func (st *receiverState) run() error {
+	for {
+		line, err := st.r.ReadString('\n')
+		if err == io.EOF {
+			return nil
 		}
-		localTarget = filepath.Join(dstPath, rn)
+		if err != nil {
+			return fmt.Errorf("read directive: %w: %s", err, readStderrSnippet(st.stderr))
+		}
+		line = strings.TrimRight(line, "\n")
+		if line == "" {
+			continue
+		}
+		switch line[0] {
+		case 'C':
+			if err := st.handleC(line); err != nil {
+				return err
+			}
+			st.pendingT = false
+		case 'D':
+			if err := st.handleD(line); err != nil {
+				return err
+			}
+			st.pendingT = false
+		case 'E':
+			if err := st.handleE(); err != nil {
+				return err
+			}
+			if len(st.pathStack) == 1 {
+				return nil
+			}
+		case 'T':
+			if st.pendingT {
+				return fmt.Errorf("scp: consecutive T directives")
+			}
+			st.pendingT = true
+			if _, err := st.stdin.Write([]byte{0}); err != nil {
+				return err
+			}
+		case 0x01, 0x02:
+			return fmt.Errorf("scp: %s (stderr: %s)",
+				strings.TrimSpace(line[1:]), readStderrSnippet(st.stderr))
+		default:
+			return fmt.Errorf("unexpected SCP directive: %q", line)
+		}
+	}
+}
+
+func (st *receiverState) handleC(line string) error {
+	mode, size, rn, err := parseCLine(line)
+	if err != nil {
+		return err
+	}
+	if _, err := st.stdin.Write([]byte{0}); err != nil {
+		return err
+	}
+
+	// At the root of a non-recursive pull where dstPath is a
+	// directory, use the validated remote name. Inside a recursive
+	// descent, always nest under the current directory.
+	var localTarget string
+	if len(st.pathStack) == 1 {
+		top := st.pathStack[0]
+		if fi, statErr := os.Stat(top); statErr == nil && fi.IsDir() {
+			if rn == "" {
+				rn = st.fallbackName
+			}
+			localTarget = filepath.Join(top, rn)
+		} else {
+			localTarget = top
+		}
+	} else {
+		localTarget = filepath.Join(st.pathStack[len(st.pathStack)-1], rn)
+	}
+
+	if err := refuseExistingSymlink(localTarget); err != nil {
+		return err
 	}
 	out, err := os.OpenFile(localTarget, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
 	if err != nil {
 		return err
 	}
-	if _, err := io.CopyN(out, r, size); err != nil {
+	if _, err := io.CopyN(out, st.r, size); err != nil {
 		out.Close()
 		return err
 	}
 	if err := out.Close(); err != nil {
 		return err
 	}
-	// Read the trailing 0 byte.
-	trailing, err := r.ReadByte()
+	if b, err := st.r.ReadByte(); err != nil {
+		return err
+	} else if b != 0 {
+		return fmt.Errorf("expected trailing 0 after file body, got %#x", b)
+	}
+	_, err = st.stdin.Write([]byte{0})
+	return err
+}
+
+func (st *receiverState) handleD(line string) error {
+	if len(st.pathStack) > MaxRecursionDepth {
+		return fmt.Errorf("scp: remote tree exceeds %d levels of recursion", MaxRecursionDepth)
+	}
+	mode, rn, err := parseDLine(line)
 	if err != nil {
 		return err
 	}
-	if trailing != 0 {
-		return fmt.Errorf("expected trailing 0, got %#x", trailing)
+
+	// Top-level: if dstPath doesn't exist, create it as the receiving
+	// dir; if it's already a directory, nest the tree inside it.
+	var localDir string
+	if len(st.pathStack) == 1 {
+		top := st.pathStack[0]
+		if fi, statErr := os.Stat(top); statErr == nil && fi.IsDir() {
+			localDir = filepath.Join(top, rn)
+		} else if os.IsNotExist(statErr) {
+			localDir = top
+		} else if statErr != nil {
+			return statErr
+		} else {
+			return fmt.Errorf("scp: refuse to overwrite non-directory %s with directory %s", top, rn)
+		}
+	} else {
+		localDir = filepath.Join(st.pathStack[len(st.pathStack)-1], rn)
 	}
-	// Ack completion.
-	if _, err := stdin.Write([]byte{0}); err != nil {
+
+	if err := refuseExistingSymlink(localDir); err != nil {
 		return err
 	}
-	_ = stdin.Close()
-	return session.Wait()
+	if err := os.MkdirAll(localDir, mode); err != nil {
+		return err
+	}
+	st.pathStack = append(st.pathStack, localDir)
+	_, err = st.stdin.Write([]byte{0})
+	return err
+}
+
+func (st *receiverState) handleE() error {
+	if len(st.pathStack) <= 1 {
+		// Stray E at the root. Ack and let run() exit.
+		_, err := st.stdin.Write([]byte{0})
+		return err
+	}
+	st.pathStack = st.pathStack[:len(st.pathStack)-1]
+	_, err := st.stdin.Write([]byte{0})
+	return err
 }
 
 // readAck consumes one SCP ack byte. Status 0 is success; 1 or 2 are
@@ -199,9 +400,8 @@ func readAck(r *bufio.Reader, stderr io.Reader) error {
 	case 1, 2:
 		msg, _ := r.ReadString('\n')
 		msg = strings.TrimRight(msg, "\n")
-		errMsg, _ := io.ReadAll(stderr)
-		if errMsg != nil && len(errMsg) > 0 {
-			return fmt.Errorf("scp: %s (stderr: %s)", strings.TrimSpace(msg), strings.TrimSpace(string(errMsg)))
+		if errMsg := readStderrSnippet(stderr); errMsg != "" {
+			return fmt.Errorf("scp: %s (stderr: %s)", strings.TrimSpace(msg), errMsg)
 		}
 		return fmt.Errorf("scp: %s", strings.TrimSpace(msg))
 	default:
@@ -209,23 +409,58 @@ func readAck(r *bufio.Reader, stderr io.Reader) error {
 	}
 }
 
+// readStderrSnippet drains up to 4 KiB of a remote stderr stream so a
+// malicious server can't exhaust our memory by piping gigabytes to
+// stderr before we report an error.
+func readStderrSnippet(stderr io.Reader) string {
+	b, _ := io.ReadAll(io.LimitReader(stderr, 4<<10))
+	return strings.TrimSpace(string(b))
+}
+
+// refuseExistingSymlink blocks the TOCTOU-narrow case where the local
+// path is an attacker-planted symlink that would redirect a write or
+// an mkdir outside the destination tree. If the path doesn't exist
+// this is a no-op.
+func refuseExistingSymlink(p string) error {
+	fi, err := os.Lstat(p)
+	if err != nil {
+		return nil // not present: nothing to check
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("scp: refuse to write through existing symlink %s", p)
+	}
+	return nil
+}
+
+// parseDLine parses "D<mode> 0 <name>" as sent by a recursive scp -f
+// when descending into a directory.
+func parseDLine(line string) (os.FileMode, string, error) {
+	mode, _, name, err := parseHeader(line, 'D')
+	return mode, name, err
+}
+
 // parseCLine parses "C<mode> <size> <name>" and returns (mode, size, name).
 func parseCLine(line string) (os.FileMode, int64, string, error) {
-	if len(line) == 0 || line[0] != 'C' {
-		return 0, 0, "", fmt.Errorf("expected C-line, got %q", line)
+	return parseHeader(line, 'C')
+}
+
+// parseHeader parses a C-line or D-line: "<prefix><mode> <size> <name>".
+// Sharing the code keeps the setuid/setgid/sticky guard and the
+// validateSCPFilename call at a single audit point.
+func parseHeader(line string, prefix byte) (os.FileMode, int64, string, error) {
+	if len(line) == 0 || line[0] != prefix {
+		return 0, 0, "", fmt.Errorf("expected %c-line, got %q", prefix, line)
 	}
-	body := line[1:]
-	parts := strings.SplitN(body, " ", 3)
+	parts := strings.SplitN(line[1:], " ", 3)
 	if len(parts) != 3 {
-		return 0, 0, "", fmt.Errorf("malformed C-line: %q", line)
+		return 0, 0, "", fmt.Errorf("malformed %c-line: %q", prefix, line)
 	}
 	mode, err := strconv.ParseUint(parts[0], 8, 32)
 	if err != nil {
 		return 0, 0, "", fmt.Errorf("bad mode %q: %w", parts[0], err)
 	}
-	// Enforce a safe mode range (no setuid / sticky surprises).
 	if mode&0o7000 != 0 {
-		return 0, 0, "", fmt.Errorf("refusing setuid/setgid/sticky mode in C-line: %#o", mode)
+		return 0, 0, "", fmt.Errorf("refusing setuid/setgid/sticky mode: %#o", mode)
 	}
 	size, err := strconv.ParseInt(parts[1], 10, 64)
 	if err != nil || size < 0 {
