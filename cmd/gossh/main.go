@@ -66,10 +66,22 @@ func run() (int, error) {
 		return 2, err
 	}
 
-	// Apply ssh_config values before CLI overrides.
+	// Apply ssh_config values before CLI overrides. If -F was not
+	// given, auto-load ~/.ssh/config when present — that's the
+	// convention OpenSSH's `ssh` follows, and it's why `gossh dev`
+	// was previously useless without `-F`.
+	configFile := *configPath
+	if configFile == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			candidate := home + "/.ssh/config"
+			if _, statErr := os.Stat(candidate); statErr == nil {
+				configFile = candidate
+			}
+		}
+	}
 	var cfgHost sshconfig.ClientHost
-	if *configPath != "" {
-		cc, err := sshconfig.ParseClientFile(*configPath)
+	if configFile != "" {
+		cc, err := sshconfig.ParseClientFile(configFile)
 		if err != nil {
 			return 2, fmt.Errorf("ssh_config: %w", err)
 		}

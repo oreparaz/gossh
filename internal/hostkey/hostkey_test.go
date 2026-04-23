@@ -29,7 +29,53 @@ func TestGenerateRSARefusesSmall(t *testing.T) {
 		t.Fatal("expected refusal of 1024-bit key")
 	}
 	if _, err := GenerateRSA(2048, ""); err == nil {
-		t.Fatal("expected refusal of 2048-bit key (below our floor)")
+		t.Fatal("expected refusal of 2048-bit key at generate time")
+	}
+}
+
+// TestLoadRSA2048Accepted verifies the asymmetry: 2048-bit RSA cannot
+// be *generated* by us, but if the user already has one on disk
+// (OpenSSH's pre-2019 default), we do accept it for load so gossh
+// is usable with existing keys.
+func TestLoadRSA2048Accepted(t *testing.T) {
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		t.Skip("ssh-keygen not available")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "id_rsa")
+	cmd := exec.Command("ssh-keygen", "-q", "-t", "rsa", "-b", "2048", "-N", "", "-f", path)
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("ssh-keygen: %v", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	kp, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load(2048-bit rsa): %v", err)
+	}
+	if kp.Signer.PublicKey().Type() != "ssh-rsa" {
+		t.Fatalf("key type %q, want ssh-rsa", kp.Signer.PublicKey().Type())
+	}
+}
+
+// TestLoadRSA1024Refused confirms the lower bound at 2048 is still
+// enforced — anything weaker is a hard fail.
+func TestLoadRSA1024Refused(t *testing.T) {
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		t.Skip("ssh-keygen not available")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "id_rsa")
+	cmd := exec.Command("ssh-keygen", "-q", "-t", "rsa", "-b", "1024", "-N", "", "-f", path)
+	if err := cmd.Run(); err != nil {
+		t.Skipf("ssh-keygen refuses 1024-bit (newer OpenSSH): %v", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("1024-bit RSA must be refused")
 	}
 }
 

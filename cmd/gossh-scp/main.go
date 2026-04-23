@@ -26,6 +26,7 @@ import (
 	"github.com/oscar/gossh/internal/client"
 	"github.com/oscar/gossh/internal/cliutil"
 	"github.com/oscar/gossh/internal/scp"
+	"github.com/oscar/gossh/internal/sshconfig"
 )
 
 func main() {
@@ -42,6 +43,7 @@ func run() error {
 		identities    cliutil.MultiFlag
 		strictArg     = flag.String("strict-host-key", "yes", "yes (default, refuse unknown) | accept-new (TOFU)")
 		knownHostsArg = flag.String("known-hosts", "", "override known_hosts path")
+		configPath    = flag.String("F", "", "path to ssh_config (default: ~/.ssh/config if present)")
 		connTimeout   = flag.Duration("connect-timeout", 10*time.Second, "")
 	)
 	flag.Var(&identities, "i", "path to identity file (repeatable)")
@@ -82,11 +84,50 @@ func run() error {
 	if err != nil {
 		return err
 	}
+
+	// ssh_config: auto-load ~/.ssh/config unless -F overrides.
+	configFile := *configPath
+	if configFile == "" {
+		if home, herr := os.UserHomeDir(); herr == nil {
+			candidate := home + "/.ssh/config"
+			if _, statErr := os.Stat(candidate); statErr == nil {
+				configFile = candidate
+			}
+		}
+	}
+	var cfgHost sshconfig.ClientHost
+	if configFile != "" {
+		cc, cerr := sshconfig.ParseClientFile(configFile)
+		if cerr != nil {
+			return fmt.Errorf("ssh_config: %w", cerr)
+		}
+		cfgHost = cc.ResolveHost(host)
+	}
+	if cfgHost.Hostname != "" && cfgHost.Hostname != host {
+		host = cfgHost.Hostname
+	}
+	if cfgHost.Port != 0 && *port == 22 {
+		remotePort = cfgHost.Port
+	}
+	if user == "" && cfgHost.User != "" {
+		user = cfgHost.User
+	}
 	if *login != "" {
 		user = *login
 	}
+	if len(identities) == 0 && len(cfgHost.IdentityFiles) > 0 {
+		identities = append(cliutil.MultiFlag(nil), cfgHost.IdentityFiles...)
+	}
+	knownHostsVal := *knownHostsArg
+	if knownHostsVal == "" && cfgHost.KnownHosts != "" {
+		knownHostsVal = cfgHost.KnownHosts
+	}
+	strictVal := *strictArg
+	if cfgHost.StrictHost != "" && !cliutil.FlagSet("strict-host-key") {
+		strictVal = cfgHost.StrictHost
+	}
 
-	mode, err := cliutil.ParseStrictHostKey(*strictArg)
+	mode, err := cliutil.ParseStrictHostKey(strictVal)
 	if err != nil {
 		return err
 	}
@@ -99,7 +140,7 @@ func run() error {
 		Port:           remotePort,
 		User:           user,
 		IdentityFiles:  identities,
-		KnownHostsPath: *knownHostsArg,
+		KnownHostsPath: knownHostsVal,
 		HostCheckMode:  mode,
 		ConnectTimeout: *connTimeout,
 	})

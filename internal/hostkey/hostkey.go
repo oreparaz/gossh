@@ -20,10 +20,22 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// MinRSABits is the smallest RSA modulus we will generate or load.
-// NIST SP 800-57 considers < 2048 unsafe after 2030; we set a higher
-// floor to match current OpenSSH defaults.
-const MinRSABits = 3072
+// MinRSAGenerateBits is the smallest RSA modulus we will *generate*.
+// Matches OpenSSH's modern ssh-keygen default.
+const MinRSAGenerateBits = 3072
+
+// MinRSALoadBits is the smallest RSA modulus we will accept from an
+// existing key file on disk. 2048 is still widely deployed (it was
+// OpenSSH's default prior to 2019) and NIST considers it safe
+// through ~2030. Refusing anything smaller aligns with openssl's
+// `DEFAULT@SECLEVEL=2` line in the sand without breaking real-world
+// user keys.
+const MinRSALoadBits = 2048
+
+// MinRSABits is retained for backward compatibility with external
+// callers (and a handful of tests). New code should use
+// MinRSAGenerateBits or MinRSALoadBits explicitly.
+const MinRSABits = MinRSAGenerateBits
 
 // Algorithm identifies the type of key we generate.
 type Algorithm string
@@ -54,10 +66,12 @@ func GenerateEd25519(comment string) (*KeyPair, error) {
 }
 
 // GenerateRSA creates a new RSA key pair of the given bit size.
-// bits must be >= MinRSABits; weaker keys are refused.
+// bits must be >= MinRSAGenerateBits; weaker keys are refused.
+// Use the stricter threshold on generation so newly-minted keys
+// always meet the stronger bar.
 func GenerateRSA(bits int, comment string) (*KeyPair, error) {
-	if bits < MinRSABits {
-		return nil, fmt.Errorf("rsa: refusing to generate key with %d bits (minimum %d)", bits, MinRSABits)
+	if bits < MinRSAGenerateBits {
+		return nil, fmt.Errorf("rsa: refusing to generate key with %d bits (minimum %d)", bits, MinRSAGenerateBits)
 	}
 	priv, err := rsa.GenerateKey(rand.Reader, bits)
 	if err != nil {
@@ -161,10 +175,12 @@ func Load(path string) (*KeyPair, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
-	// If it's RSA, enforce minimum size on load as well.
+	// If it's RSA, enforce the (more permissive) load floor.
+	// Anything below 2048 is weak enough that we refuse to use it;
+	// the common 2048 default from older systems is still allowed.
 	if rsaKey, ok := priv.(*rsa.PrivateKey); ok {
-		if rsaKey.N.BitLen() < MinRSABits {
-			return nil, fmt.Errorf("rsa key %s has %d bits (minimum %d)", path, rsaKey.N.BitLen(), MinRSABits)
+		if rsaKey.N.BitLen() < MinRSALoadBits {
+			return nil, fmt.Errorf("rsa key %s has %d bits (minimum %d)", path, rsaKey.N.BitLen(), MinRSALoadBits)
 		}
 	}
 	signer, err := ssh.NewSignerFromKey(priv)
