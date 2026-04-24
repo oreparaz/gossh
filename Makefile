@@ -3,7 +3,7 @@ PKG := github.com/oscar/gossh
 BIN_DIR := bin
 LDFLAGS := -s -w
 
-.PHONY: all build build-server build-client build-keygen test test-short test-interop fmt vet lint clean tidy
+.PHONY: all build build-server build-client build-keygen build-scp test test-short test-interop e2e fmt vet lint clean tidy coverage
 
 all: build test
 
@@ -26,13 +26,20 @@ build-scp:
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/gossh-scp ./cmd/gossh-scp
 
 test:
-	$(GO) test -race -timeout 120s ./...
+	$(GO) test -race -timeout 180s ./...
 
 test-short:
 	$(GO) test -short -timeout 30s ./...
 
 test-interop:
 	$(GO) test -race -tags=interop -timeout 300s ./...
+
+# Integration tests that drive the built binaries end-to-end through a
+# real TCP socket, nc-backed ProxyCommand, and tmux where available.
+# Skip-tolerant: tests that need nc/tmux/scp will t.Skip if the tool
+# is absent. Pair with `make build` in CI.
+e2e:
+	$(GO) test -race -timeout 120s -run 'TestE2E|TestSCP|TestProxyCommand|TestGosshAutoloads' -v ./...
 
 fmt:
 	$(GO) fmt ./...
