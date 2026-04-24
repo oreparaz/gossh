@@ -106,6 +106,7 @@ func setupE2E(t *testing.T) *e2eRig {
 		AuthorizedKeys: server.StaticAuthorizedKeys(entries),
 		Shell:          "/bin/bash",
 		AllowExec:      true,
+		AllowPTY:       true,
 	})
 	if err != nil {
 		t.Fatal(err)

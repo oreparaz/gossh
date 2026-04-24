@@ -37,10 +37,24 @@ func (st *sessionState) runPTY(command string) {
 	st.setChildCmd(cmd)
 	defer st.setChildCmd(nil)
 
-	// Resize watcher.
+	// Resize watcher. resizeStop lets runPTY retire this goroutine
+	// deterministically before ses.Close — otherwise a window-change
+	// that arrives as the session is tearing down could call
+	// pty.Setsize on an already-closed fd (race on os.File.Fd).
+	resizeStop := make(chan struct{})
+	resizeDone := make(chan struct{})
 	go func() {
-		for w := range st.resize {
-			_ = ses.Resize(w.Rows, w.Cols)
+		defer close(resizeDone)
+		for {
+			select {
+			case w, ok := <-st.resize:
+				if !ok {
+					return
+				}
+				_ = ses.Resize(w.Rows, w.Cols)
+			case <-resizeStop:
+				return
+			}
 		}
 	}()
 
@@ -61,6 +75,9 @@ func (st *sessionState) runPTY(command string) {
 
 	waitErr := cmd.Wait()
 	st.exitCode = exitStatus(waitErr)
+	// Retire the resize watcher before the master is closed.
+	close(resizeStop)
+	<-resizeDone
 	_ = ses.Close() // master close → outputDone unblocks → send exit
 	<-outputDone
 	_ = st.ch.CloseWrite()
