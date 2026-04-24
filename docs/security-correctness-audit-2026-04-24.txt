@@ -1,0 +1,135 @@
+Security and Correctness Audit
+Project: gossh / gosshd
+Date: 2026-04-24
+
+Method:
+- Source-code audit only for the current tree.
+- I did not rely on the previous report as authority; I re-read the current security-sensitive paths.
+- I did not repeat issues that appear fixed in this tree.
+
+Notable fixes since the 2026-04-17 pass:
+- Client binaries now default `-strict-host-key` to `yes`.
+- `client.Dial` now bounds the post-connect SSH handshake with deadlines / ctx cancellation.
+- Remote-forward listener bookkeeping now uses the assigned port for `-R 0`.
+- `forwarded-tcpip` fan-out is now charged against the per-connection channel cap.
+- SCP filename validation now rejects Windows separators / drive prefixes.
+- Audit-log write failures are now surfaced via `audit.JSONLogger.OnError`.
+- `ssh_config` inline `#` comments are now stripped correctly.
+- `Client.Shell()` now stops its SIGWINCH goroutine.
+
+Current findings:
+
+1. Medium: explicit port `22` cannot override `ssh_config` `Port`
+Impact:
+- `gossh -p 22 alias`, `gossh alias:22`, `gossh-scp -p 22 ...`, and `gossh-scp alias:22:...` can still be redirected to the `Port` from `ssh_config`.
+- The current merge logic cannot distinguish "default 22" from "the user explicitly asked for 22", so an explicit standard-port override can silently lose to config.
+- This is a correctness bug with real operational fallout: the client can connect or copy to the wrong endpoint even though the user provided an explicit port.
+Evidence:
+- `cmd/gossh/main.go:96-98`
+- `cmd/gossh-scp/main.go:111-113`
+- `internal/cliutil/cliutil.go:38-73`
+Suggested fix:
+- Track whether the port came from explicit user input, not just its numeric value.
+- `-p` can use `cliutil.FlagSet("p")`, but that is not enough by itself because `[user@]host:22` is also explicit input.
+- Change `ParseTarget` to return an extra `portExplicit` boolean (or equivalent), and only apply `cfgHost.Port` when neither `-p` nor the target string supplied a port.
+
+2. Medium: `gosshd` parses `sshd_config Port` but never applies it
+Impact:
+- Operators can set `Port` in `sshd_config`, see it parse successfully, and still have `gosshd` bind the default / CLI `-listen` address instead.
+- That can leave the service listening on the wrong port, break firewall assumptions, or make a deployment look configured when it is not.
+Evidence:
+- `cmd/gosshd/main.go:67-94` parses `sshd_config` defaults but never uses `sc.Port`.
+- `internal/sshconfig/sshconfig.go:156-163`
+- `internal/sshconfig/sshconfig.go:185-191`
+- The repo documentation still describes `Port` as effective: `docs/configuration.md:97-109`.
+Suggested fix:
+- If `sc.Port != 0` and `-listen` was not explicitly set, rewrite the listen address to use that port.
+- To make that precedence easy to express, prefer either:
+- `-listen` defaulting to empty and filling the final default after config load, or
+- keeping the current default but gating config application on `!cliutil.FlagSet("listen")`.
+- Add an integration test that boots `gosshd -f <config>` with `Port 0` / `Port <chosen>` and asserts the actual listener address.
+
+3. Medium: SCP download hardening only checks the final leaf for symlinks
+Impact:
+- A malicious server can still escape the intended download tree if the chosen local destination already contains a symlinked parent component, especially when the top-level destination itself is a symlink to a directory.
+- The code comment says it blocks attacker-planted symlinks, but the current check misses existing symlinks in parent directories and treats every `Lstat` error as "not present".
+- This affects both top-level file downloads and recursive directory downloads.
+Evidence:
+- Root download state starts with the raw destination path: `internal/scp/scp.go:220-226`
+- File download joins under `top` after `os.Stat(top)`, which follows symlinks: `internal/scp/scp.go:304-321`
+- Recursive directory download does the same for `top`: `internal/scp/scp.go:350-375`
+- The symlink guard only inspects the final path and ignores all `Lstat` errors: `internal/scp/scp.go:420-432`
+Suggested fix:
+- Walk every existing component from the destination root to the final path with `Lstat`, and reject any symlink anywhere in that chain.
+- Only suppress `ENOENT`; do not collapse permission / path errors into "safe to proceed".
+- On platforms that support it, an `openat` / `O_NOFOLLOW` style implementation is even better because it narrows the remaining TOCTOU surface.
+- Add tests for downloading into:
+- a top-level destination that is a symlink to a directory
+- a nested destination with a symlinked parent component
+
+4. Medium: single-file SCP upload misinterprets directory destinations ending in `/`
+Impact:
+- Common syntax such as `gossh-scp ./file me@host:/dst/` is handled as "upload a file literally named `dst` into `/`" instead of "upload `./file` into `/dst/` using its basename".
+- Uploading to `/` is also wrong for the same reason.
+- This is not just theoretical: the README documents the trailing-slash form as normal usage.
+Evidence:
+- Single-file upload routes through `splitRemote(dstPath)`: `internal/scp/scp.go:72-82`
+- `splitRemote` strips trailing slashes before splitting: `internal/scp/scp.go:514-525`
+- Documented example: `README.md:67-69`
+Suggested fix:
+- Preserve an explicit "directory destination" signal when the remote path ends in `/` or is exactly `/`.
+- For directory destinations, start remote `scp -t` with the full directory path and keep the transmitted name as `filepath.Base(srcPath)`.
+- Add regression tests for:
+- `host:/dst/`
+- `host:/`
+- an existing remote directory path that should receive `basename(src)`
+
+5. Medium: `gossh-scp` remote-path splitting breaks `user@[ipv6]:path`
+Impact:
+- Valid OpenSSH-style arguments such as `alice@[2001:db8::1]:/tmp/x` and `alice@[2001:db8::1]:2222:/tmp/x` are mis-split at the first colon inside the IPv6 literal.
+- The binary can then misclassify the argument or pass a malformed target into later parsing.
+Evidence:
+- `cmd/gossh-scp/main.go:167-189`
+- The bracket-aware branch only runs when the string literally starts with `[`, so a `user@` prefix falls through to `strings.Index(s, ":")`.
+Suggested fix:
+- Strip and remember an optional `user@` prefix before the IPv6-bracket logic runs.
+- Better: replace this bespoke splitter with one parser for the whole SCP grammar `[user@]host[:port]:path`, then reuse `cliutil.ParseTarget` on the host portion.
+- Add unit tests for:
+- `user@[::1]:/tmp/x`
+- `user@[::1]:2222:/tmp/x`
+- `[::1]:/tmp/x`
+
+6. Medium: quoted `ssh_config` values are preserved literally instead of being parsed
+Impact:
+- Quoted config values do not behave like OpenSSH. Examples:
+- `Hostname "server.example"` keeps the quotes in the resolved hostname.
+- `UserKnownHostsFile "~/known hosts"` keeps quotes and does not cleanly expand into a usable path.
+- `IdentityFile "~/my key"` is split with `strings.Fields`, so one logical path turns into multiple bogus identities.
+- This is a correctness bug in a user-facing compatibility surface that the parser explicitly claims to support.
+Evidence:
+- `stripComment` documents quoted-value handling: `internal/sshconfig/sshconfig.go:223-232`
+- `parseKV` returns the raw remainder without unquoting: `internal/sshconfig/sshconfig.go:262-283`
+- `ResolveHost` splits `IdentityFile` with `strings.Fields`: `internal/sshconfig/sshconfig.go:58-63`
+Suggested fix:
+- Add one small lexer/unquoter for config values and use it consistently in both client and server parsing.
+- Store `IdentityFile` as a slice during parse time instead of concatenating multiple entries into one space-delimited string.
+- Add regression tests for quoted:
+- `Hostname`
+- `UserKnownHostsFile`
+- `IdentityFile`
+
+7. Low: failure to resolve the home directory silently redirects trust state to `./.ssh/known_hosts`
+Impact:
+- When `KnownHostsPath` is left empty and `os.UserHomeDir()` fails, the client silently falls back to `.ssh/known_hosts` relative to the current working directory.
+- In strict mode, that can make the client trust a cwd-local `known_hosts` file that the caller did not intend to use.
+- In TOFU mode, it can create and populate trust state in the wrong location.
+Evidence:
+- `internal/client/client.go:67-72`
+- `internal/knownhosts/knownhosts.go:69-76`
+Suggested fix:
+- If `KnownHostsPath` is empty and the home directory cannot be resolved, return an explicit error instead of calling `filepath.Join("", ".ssh", "known_hosts")`.
+- Consider applying the same policy to default identity probing so the client behaves consistently when `HOME` is unavailable.
+
+Overall assessment:
+- The tree is materially better than it was on 2026-04-17. The earlier high-impact transport / trust / audit issues are mostly fixed in the current source.
+- The highest-signal remaining problems are now in configuration precedence, SCP path handling, and a few edge-case trust-path assumptions rather than in the main SSH transport core.
