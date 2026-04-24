@@ -60,7 +60,8 @@ the automated check.
   rejected (typo in `command=` can't silently disable it).
 - **Private key permission check**: world- or group-readable host
   key files are rejected on load.
-- **RSA minimum size 3072 bits** at both generation and load.
+- **RSA minimum size 3072 bits** for generation; **2048 bits**
+  accepted on load for interop with the pre-2019 OpenSSH default.
 - **Enforced authorized_keys options**: `restrict`, `command=`,
   `from=` (pattern list with CIDR / wildcard / negation),
   `permitopen=`, `permitlisten=`, `environment=`, `no-pty`,
@@ -95,9 +96,22 @@ the automated check.
 - **Size-capped key reads.** `hostkey.Load` limits the file to
   1 MiB; a symlink-to-`/dev/zero` can't exhaust memory.
 - **SCP client path-traversal guard.** On download, the remote's
-  C-line filename is rejected if it contains `/`, `\x00`, `.`,
-  or `..`; setuid/setgid/sticky modes are also refused
-  (closes the CVE-2019-6111 class).
+  C-line and D-line filenames are rejected if they contain `/`,
+  `\`, `\x00`, `.`, `..`, or Windows drive/UNC prefixes;
+  setuid/setgid/sticky modes are also refused (closes the
+  CVE-2019-6111 class).
+- **SCP symlink-write guard.** On download, every existing component
+  of the local destination path is `Lstat`'d from the filesystem
+  root down; any symlink in the chain aborts the write so a
+  pre-planted symlink can't redirect bytes outside the intended
+  tree. Permission/I-O errors surface rather than being swallowed.
+- **SCP recursion depth cap.** Recursive transfers bound at 64 levels
+  to keep a hostile peer from walking us through unbounded D-lines.
+- **ProxyCommand substitution allowlist.** `%h`/`%r` values (from
+  the target string or `ssh_config`) are validated against a tight
+  shell-safe character set before being spliced into `sh -c`, so a
+  user-typed `gossh "foo; rm -rf ~"` cannot turn the ProxyCommand
+  template into an injection vector.
 
 ## Things we intentionally *do not* support
 
@@ -110,9 +124,7 @@ justify for the 80%-of-OpenSSH goal:
   agent for the lifetime of the connection. Too easy to misuse.
 - X11 forwarding.
 - GSSAPI / Kerberos.
-- SFTP subsystem.
-- SCP **recursion** (directory trees); single-file SCP is
-  supported via `gossh-scp` / exec.
+- SFTP subsystem. Use `gossh-scp -r` or `exec tar` for trees.
 - `ssh-rsa` signatures with SHA-1.
 - AES-CBC and HMAC-SHA1.
 

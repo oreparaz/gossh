@@ -1,15 +1,17 @@
-// Command gossh-scp is a minimal SCP client for transferring single
-// files over an SSH connection provided by the gossh client package.
+// Command gossh-scp is a minimal SCP client for transferring files
+// and directory trees over an SSH connection provided by the gossh
+// client package.
 //
 // Usage:
 //
-//	gossh-scp [flags] localfile   [user@]host[:port]:remotepath
-//	gossh-scp [flags] [user@]host[:port]:remotepath localfile
+//	gossh-scp [flags] localpath   [user@]host[:port]:remotepath
+//	gossh-scp [flags] [user@]host[:port]:remotepath localpath
 //
-// One argument contains a colon (the remote); the other is local.
-// Recursion (-r) is not supported — SCP's historical vulnerabilities
-// live almost entirely in its directory-walk code. For bulk / tree
-// copy, tar over `gossh host 'tar -cz ...'`.
+// Pass -r to recursively copy directories. One argument contains a
+// colon (the remote); the other is local. Recursive transfers are
+// depth-capped and every remote filename goes through the same
+// CVE-hardened validator as single-file transfers; see the scp
+// package for details.
 package main
 
 import (

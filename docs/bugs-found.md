@@ -359,3 +359,89 @@ produced garbage.
 **Fix:** rewrote `stripComment` to scan for an unquoted `#`,
 honouring double quotes and `\"` escapes. Tests added for
 both `ParseClient` and `ParseServer`.
+
+### 35. PTY resize goroutine raced with session teardown
+
+The server's per-session resize watcher consumed `st.resize` and
+called `pty.Setsize(master)` on each window-change. On teardown
+`runPTY` did `ses.Close()` on the master, but the watcher could
+still be in flight with the same `*os.File`. The race was caught
+by `TestE2EPTYInteractiveShellAndResize` on its first run under
+`-race`.
+
+**Fix:** added a `resizeStop` channel the watcher selects on
+alongside `st.resize`; `runPTY` closes it and waits for the
+watcher to exit before `ses.Close`. The existing
+`close(st.resize)` in `handleSession` stays as a cleanup
+belt-and-suspenders.
+
+### 36. Port precedence: `-p 22` could be silently overridden by ssh_config
+
+`cfgHost.Port != 0 && *port == 22` couldn't distinguish "default
+22" from "user explicitly typed 22". ssh_config `Port 2222`
+would then win over an explicit `-p 22`. (2026-04-24 audit #1.)
+
+**Fix:** `ParseTarget` now returns a `portExplicit` bool; both
+CLIs OR it with `cliutil.FlagSet("p")` before letting ssh_config
+fill in. Added `host:22` test case to `TestParseTarget`.
+
+### 37. gosshd never applied `sshd_config Port`
+
+The field was parsed but unused; operators could set `Port` in
+the config file, see no parse error, and still get the
+`-listen`-default port. (2026-04-24 audit #2.)
+
+**Fix:** after config load, if `sc.Port != 0` and `-listen` was
+not explicitly set, rewrite the port of the listen address.
+
+### 38. SCP symlink check only looked at the final leaf
+
+`refuseExistingSymlink` Lstat'd the target path only; a
+symlinked *parent* directory still let bytes land outside the
+intended tree. Any non-ENOENT error was silently treated as
+"safe to proceed". (2026-04-24 audit #3.)
+
+**Fix:** walk every existing component from the filesystem root
+to the target, refuse on any symlink, surface non-ENOENT errors.
+Regression: `TestDownloadRefusesSymlinkedParent`.
+
+### 39. Single-file SCP upload misinterpreted `host:/dst/`
+
+`splitRemote` trimmed the trailing slash, so `./file host:/dst/`
+routed through as `remoteTarget="/", topName="dst"` and the file
+landed at `/dst` — overwriting the directory. (2026-04-24 audit #4.)
+
+**Fix:** when `dstPath` ends with `/`, use the whole path as the
+remote `-t` target and `filepath.Base(srcPath)` as the C-line
+name. Regression: `TestUploadTrailingSlashIsDirectoryDestination`.
+
+### 40. `gossh-scp` IPv6 + `user@` mis-split
+
+`user@[::1]:/tmp/x` was split at the first colon inside the
+bracket because the bracket-aware branch only ran when the
+string literally started with `[`. (2026-04-24 audit #5.)
+
+**Fix:** peel off any `user@` prefix before the bracket logic.
+Regression: `TestSplitRemote` covers `alice@[::1]:/tmp/x` and
+`alice@[2001:db8::1]:2222:/tmp/x`.
+
+### 41. `ssh_config` quoted values preserved literally
+
+`Hostname "host.example"` resolved to the literal string
+`"host.example"`; `IdentityFile "~/my key"` got
+`strings.Fields`'d into two bogus identities. (2026-04-24 audit #6.)
+
+**Fix:** `parseKV` now strips one layer of surrounding double
+quotes, honouring `\"`. `IdentityFile` is stored as a
+`[]string` at parse time so paths with spaces survive.
+Regression: `TestQuotedValues`.
+
+### 42. Missing `$HOME` silently redirected trust to `./.ssh/known_hosts`
+
+When `KnownHostsPath` was empty and `os.UserHomeDir()` failed,
+`filepath.Join("", ".ssh", "known_hosts")` produced a
+cwd-relative path that Strict mode would then trust.
+(2026-04-24 audit #7.)
+
+**Fix:** return an error instructing the caller to pass
+`-known-hosts` explicitly; no cwd fallback.

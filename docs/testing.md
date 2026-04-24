@@ -3,9 +3,12 @@
 ## Commands
 
 ```sh
-make test                                          # go test -race -timeout 120s ./...
-go test -race -timeout 300s ./...                  # same, direct invocation
-go test -short ./...                               # skip integration; unit only
+make test                                          # go test -race -timeout 180s ./...
+make test-short                                    # unit tests only
+make e2e                                           # focused regression run:
+                                                   #   ProxyCommand, scp -r,
+                                                   #   tmux session, PTY
+go test -race -timeout 180s ./...                  # equivalent to make test
 go test -fuzz FuzzParseCLine -fuzztime 30s \
     ./internal/scp/                                # run one fuzz target
 ```
@@ -40,7 +43,11 @@ Each `internal/<pkg>/` has:
 | gossh → gosshd | `internal/client/client_test.go` | exec, TOFU, strict mode |
 | gossh → gosshd (`-L`/`-R`/`-D`) | `internal/client/forward_test.go` | all three forward types |
 | gossh → OpenSSH sshd | `internal/client/openssh_interop_test.go` | spawns unprivileged sshd |
-| gossh-scp → gosshd | `internal/scp/scp_test.go` | upload + download |
+| gossh-scp → gosshd | `internal/scp/scp_test.go` | upload + download (single file) |
+| gossh-scp -r → gosshd | `internal/scp/recursive_test.go` | recursive round-trip; trailing-slash dst; symlink-parent refusal |
+| gossh → gosshd via ProxyCommand | `internal/client/proxy_test.go` | nc-tunneled handshake + exec; shell-meta rejection |
+| gossh + gossh-scp end-to-end (built binaries) | `cmd/gossh/e2e_session_test.go` | ProxyCommand + scp -r + tmux persistence |
+| gossh real-PTY | `cmd/gossh/e2e_pty_test.go` | window-size forwarding, SIGWINCH, ^C, TERM passthrough (uses `github.com/creack/pty`) |
 
 ## Algorithm-negotiation negatives
 

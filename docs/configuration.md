@@ -47,13 +47,16 @@ Internal defaults that are *not* on the CLI:
 | `-N` | `false` | No remote command; useful with `-L/-R/-D` |
 | `-T` | `false` | Disable PTY |
 | `-t` | `false` | Force PTY for exec |
-| `-F` | — | Path to `ssh_config`-style file |
-| `-known-hosts` | `~/.ssh/known_hosts` | Override path |
-| `-strict-host-key` | `yes` | `yes` (refuse unknown, default) \| `accept-new` (TOFU) \| `no` (disabled) |
+| `-F` | *(auto: `~/.ssh/config` if present)* | Path to `ssh_config`-style file |
+| `-known-hosts` | `~/.ssh/known_hosts` | Override path. If empty and `$HOME` is unresolvable, Dial errors rather than fall back to `./ .ssh/known_hosts`. |
+| `-strict-host-key` | `yes` | `yes` (refuse unknown, default) \| `accept-new` (TOFU) |
+| `-proxy-command` | *(empty)* | Shell command to tunnel the SSH transport; `%h` / `%p` / `%r` are substituted (with shell-safety validation) and the result is run via `sh -c`. Same as the `ProxyCommand` keyword in `ssh_config`. |
 
 ## `gossh-scp` flags
 
-Same auth flags as `gossh`. One extra:
+Same auth flags as `gossh`, plus:
+- `-r` — recursively copy directory trees (see SCP section below).
+- `-proxy-command` — same semantics as on `gossh`.
 - `-connect-timeout` (default 10 s).
 
 ## `gossh-keygen` flags
@@ -98,7 +101,7 @@ OpenSSH authorized_keys files):
 
 | Keyword | Effect |
 |---|---|
-| `Port N` | Overrides `-listen`'s port if listen wasn't set |
+| `Port N` | Applied to `-listen`'s port when `-listen` was not explicitly set on the CLI |
 | `ListenAddress addr` | Recorded; not currently multi-bound |
 | `HostKey path` | Added to host-key list (repeatable) |
 | `AuthorizedKeysFile path` | Used when `-authorized-keys` not set |
@@ -118,15 +121,46 @@ files to work.
 |---|---|
 | `Host pat [pat...]` | Section selector |
 | `Hostname` | Real host to dial |
-| `Port` | Remote port |
+| `Port` | Remote port. Explicit CLI `-p` or `host:port` beats this. |
 | `User` | Login name |
-| `IdentityFile` | Identity path (additive across lines) |
+| `IdentityFile` | Identity path; additive across lines and matching sections. Stored as a list at parse time, so paths with spaces (quoted) survive intact. |
 | `UserKnownHostsFile` | Override |
-| `StrictHostKeyChecking yes|accept-new|no` | |
+| `StrictHostKeyChecking yes|accept-new` | `no` / `off` are refused — disabling host-key verification is a MITM foot-gun. |
+| `ProxyCommand` | Shell command used to carry the SSH transport; `%h` / `%p` / `%r` substituted (shell-safety validated) before `sh -c`. |
 | `Match`, `Include` | **ignored** (warned) |
 
 Client uses first-match semantics per keyword (matches OpenSSH).
 `IdentityFile` is additive across matching sections.
+
+Quoted values — e.g. `Hostname "host.example"` or `IdentityFile
+"~/my key"` — are unquoted once at parse time (one layer, with `\"`
+escapes honoured). This matches OpenSSH's shell-like quoting for the
+directives we support.
+
+## `gossh-scp` recursion and ProxyCommand
+
+With `-r`, `gossh-scp` walks a source tree depth-first, emitting the
+OpenSSH SCP D/E/C wire protocol. Guards:
+
+- **Max depth 64** (both send and receive). A hostile peer cannot walk
+  the receiver through unbounded nesting.
+- **Symlink-write refusal**: on download, every existing path component
+  is `Lstat`-ed from root to leaf; any symlink in the chain aborts
+  the write.
+- **Filename validator**: C-line and D-line names are rejected if they
+  contain `/`, `\`, `\x00`, `.`, `..`, or look like a Windows drive
+  letter / UNC prefix.
+- **Consecutive T directives rejected**: T-spam DoS is capped at one
+  pending T between C/D.
+- **Stderr from remote capped at 4 KiB** on error paths, so a chatty
+  remote can't exhaust client memory.
+
+Trailing-slash upload destinations (e.g. `./file host:/dst/`) are
+treated as "drop into this directory under its own basename", not
+"rename to `/dst`".
+
+`-proxy-command` carries the same semantics as `gossh`'s flag and the
+`ProxyCommand` keyword in `ssh_config`.
 
 ## Cryptographic allowlist
 

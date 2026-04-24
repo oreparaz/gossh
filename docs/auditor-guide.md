@@ -16,9 +16,13 @@ here, then follow the links to deeper material.
   port-forwarding workloads. No multi-user privsep, no SFTP
   subsystem, no agent forwarding.
 - **LoC:** ~11 k Go. Single repo, no external runtime deps beyond
-  `x/crypto`, `x/term`, `x/sys`, `creack/pty`.
-- **Tests:** unit + integration + fuzz + interop against the
-  system `ssh` / `sshd`. `go test -race ./...` runs in ~60 s.
+  `x/crypto`, `x/term`, `x/sys`, `creack/pty` (used by both the
+  server-side PTY allocation and the real-PTY e2e tests).
+- **Tests:** unit + integration + fuzz + real-PTY end-to-end against
+  the system `ssh` / `sshd` and against built gossh/gossh-scp.
+  `make test` (`go test -race ./...`) runs in ~30 s; `make e2e`
+  runs the focused regression set (ProxyCommand, `scp -r`, tmux
+  session persistence, PTY) in ~5 s.
 
 ## Where policy lives (audit these first)
 
@@ -30,7 +34,8 @@ here, then follow the links to deeper material.
 | Host-key verification | `internal/knownhosts/knownhosts.go` | TOFU/strict modes, MITM rejection always fatal |
 | Session dispatch | `internal/server/server.go` (`handleSession`) | `env`/`pty-req` caps, exec/shell gating |
 | Forwarding policy | `internal/server/server.go`, `internal/server/remote_forward.go` | `permitopen`/`permitlisten` enforcement, disabled by default |
-| SCP traversal guard | `internal/scp/scp.go` (`parseCLine`) | Filters `..` / `/` / setuid in remote C-lines |
+| SCP traversal guard | `internal/scp/scp.go` (`parseHeader`, `validateSCPFilename`, `refuseExistingSymlink`) | Filters `..` / `/` / `\` / setuid in remote C- and D-lines; parent-chain symlink refusal on download |
+| ProxyCommand substitution | `internal/client/proxy.go` (`expandProxyTokens`, `validateShellSafe`) | Tight shell-safe allowlist on `%h` / `%r` so CLI input can't inject into `sh -c` |
 
 ## Threat model
 
@@ -43,9 +48,12 @@ authorized_keys) or against kernel-level attacks on the Go runtime.
 
 [`bugs-found.md`](bugs-found.md) tracks **every** correctness or
 security bug we've found during this project, with fix commit,
-regression test, and brief root-cause. 26 entries to date.
-This is the best way to calibrate what classes of issue have
-already been considered.
+regression test, and brief root-cause. This is the best way to
+calibrate what classes of issue have already been considered.
+
+The two `security-correctness-audit-*.txt` files are snapshots of
+external audit passes. Findings from both are addressed in the
+tree (see matching entries in `bugs-found.md`).
 
 ## Test matrix
 
@@ -79,7 +87,9 @@ connection from accept through teardown, with file/line pointers.
 
 ```sh
 make build                              # builds 4 binaries
-go test -race -timeout 300s ./...       # unit + integration
+make test                               # unit + integration, -race, 180s
+make e2e                                # focused regression (ProxyCommand,
+                                        # scp -r, tmux, PTY) — ~5 s
 go test -fuzz FuzzParseCLine -fuzztime 30s ./internal/scp/
 go test -fuzz FuzzAppend -fuzztime 30s ./internal/knownhosts/
 ```

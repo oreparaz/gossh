@@ -25,13 +25,16 @@ Binaries land in `./bin/`:
 - User auth: **public-key only** (no password, no keyboard-interactive)
 - Sessions: interactive PTY (bash), exec (`ssh host cmd`)
 - Forwarding: `-L` (direct-tcpip), `-R` (tcpip-forward), `-D` (SOCKS5)
-- File transfer: `gossh-scp` (single file, no recursion) and
+- File transfer: `gossh-scp` (single file + recursive with `-r`) and
   interop with system `scp` via `exec`
+- `ProxyCommand` support for SSH-over-anything tunnels (AWS SSM,
+  `nc`, `socat`, …) via `-proxy-command` or `ssh_config`
 - `authorized_keys` options enforced: `command=`, `from=` (IP/CIDR/
   wildcard/negation), `permitopen=`, `permitlisten=`, `restrict`,
   `no-pty`, `no-port-forwarding`, `environment=`
 - `ssh_config` subset: `Host`, `Hostname`, `Port`, `User`,
-  `IdentityFile`, `UserKnownHostsFile`, `StrictHostKeyChecking`
+  `IdentityFile`, `UserKnownHostsFile`, `StrictHostKeyChecking`,
+  `ProxyCommand`
 - `sshd_config` subset: `Port`, `ListenAddress`, `HostKey`,
   `AuthorizedKeysFile`, `MaxAuthTries`, `PermitRootLogin`
 - Signal forwarding (client Ctrl-C → remote child, process-group)
@@ -67,6 +70,7 @@ chmod 600 ~/.ssh/authorized_keys
 # SCP
 ./bin/gossh-scp -p 2222 -i ~/.ssh/id_ed25519 ./file me@host:/dst/
 ./bin/gossh-scp -p 2222 -i ~/.ssh/id_ed25519 me@host:/src ./local
+./bin/gossh-scp -p 2222 -i ~/.ssh/id_ed25519 -r ./project me@host:/home/me/
 ```
 
 ## Aliases with ssh_config
@@ -120,8 +124,7 @@ See [`SECURITY.md`](SECURITY.md) for rationale. In short:
 - GSSAPI / Kerberos
 - X11 forwarding
 - Agent forwarding (`-A`) — too easy to misuse
-- SFTP subsystem (use `gossh-scp` or `exec tar` for transfer)
-- SCP recursion (`-r`) — CVE-laden path; single files only
+- SFTP subsystem (use `gossh-scp -r` or `exec tar` for transfer)
 - Multi-user privilege separation (gosshd runs as a single user)
 
 ## Layout

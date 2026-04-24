@@ -90,6 +90,9 @@ approximate — treat them as waypoints, not fixed addresses.
       one goroutine copies pty→channel, another copies channel→pty;
       a resize goroutine drains the window-change channel.
       `Setsid`+`Setctty` make the child a session leader.
+      On teardown, `runPTY` signals the resize goroutine to stop and
+      waits for it before closing the master — a late window-change
+      that arrived as the child exited must not ioctl a closed fd.
 
 12. **Signal forwarding.** `deliverSignal` resolves an SSH signal
     name to `syscall.Signal` and sends via `kill(-pid, sig)` when
@@ -120,14 +123,24 @@ Entry points in `internal/client/client.go`.
    `x/crypto/ssh/knownhosts`:
    - `Strict`: refuse unknown hosts,
    - `TOFU` / `AcceptNew`: add to file on first sight; mismatch
-     is always fatal,
-   - `Off`: unit-test only.
+     is always fatal.
    The callback holds the verifier mutex for the entire
    verification so concurrent first-connects can't write
-   duplicate entries.
-3. **Dial.** `net.Dialer.DialContext` honours the caller's
-   context; `ssh.NewClientConn` runs the handshake under the
-   same algorithm allowlist.
+   duplicate entries. If `KnownHostsPath` is empty and `$HOME`
+   can't be resolved, Dial errors instead of silently falling
+   back to `./.ssh/known_hosts` in the working directory.
+3. **Dial.** Two paths:
+   - Direct TCP: `net.Dialer.DialContext` honours the caller's
+     context and is bounded by `ConnectTimeout`.
+   - `ProxyCommand`: `sh -c <expanded>` is exec'd; its stdio is
+     wrapped as a `net.Conn` (`internal/client/proxy.go`). `%h` /
+     `%p` / `%r` substitutions are rejected if they contain
+     anything outside a tight shell-safe allowlist, so a malicious
+     host/user on the CLI can't inject commands.
+   `ssh.NewClientConn` then runs the handshake under the same
+   algorithm allowlist. The handshake is bounded by a
+   context-cancel watcher + socket deadline, so a TCP-accept
+   followed by a stall at the SSH layer can't hang forever.
 4. **Session.** `Exec` / `ExecContext` / `Shell`. `ExecContext`
    forwards a single `SIGTERM` to the remote when ctx is
    cancelled; no `signal.Notify` is installed from library
@@ -138,19 +151,33 @@ Entry points in `internal/client/client.go`.
 
 ## SCP path (client)
 
-`internal/scp/scp.go`. We drive the remote `scp -t` (upload) or
-`scp -f` (download) subprocess by sending/receiving the legacy
-SCP wire format over stdin/stdout of an SSH exec channel:
+`internal/scp/scp.go`. We drive the remote `scp -t` / `scp -rt`
+(upload) or `scp -f` / `scp -rf` (download) subprocess by
+sending/receiving the legacy SCP wire format over stdin/stdout of
+an SSH exec channel:
 
-- Upload: send `C<mode> <size> <name>\n`, read 1-byte ack, stream
-  bytes, send trailing `\0`, read final ack, close stdin.
-- Download: send `\0` ready, parse C-line, send ack, read bytes,
-  read trailing `\0`, send ack.
+- Upload (single file): send `C<mode> <size> <name>\n`, read ack,
+  stream bytes, send trailing `\0`, read final ack, close stdin.
+- Upload (`-r`): `uploadTree` walks the local dir depth-first,
+  emitting `D<mode> 0 <name>\n` + body + `E\n` around each
+  directory and `C` for each regular file. Non-regular entries
+  (symlinks, sockets, devices) are skipped — OpenSSH behaves
+  the same.
+- Download: send `\0` ready; `receiverState.run` reads C / D / E
+  / T directives. D pushes the path stack, E pops, C writes a
+  regular file. Only ENOENT is treated as "nothing to check" on
+  symlink-refusal Lstat; other errors surface.
 
-`parseCLine` rejects path-traversal names (`..`, `/`, `\0`) and
-setuid/setgid/sticky modes — this is the single most important
-defensive parser in the codebase from a malicious-server
-standpoint.
+`parseHeader` (shared by `parseCLine` + `parseDLine`) rejects
+path-traversal names (`..`, `/`, `\`, `\0`, Windows drive/UNC
+prefixes) and setuid/setgid/sticky modes — this is the single
+most important defensive parser in the codebase from a
+malicious-server standpoint. `refuseExistingSymlink` walks every
+existing parent component from root to leaf so a symlinked
+parent can't redirect the write. Recursive transfers are capped
+at 64 levels (both send and receive). Consecutive `T` directives
+are rejected and remote stderr reads are capped at 4 KiB to
+neutralise trivial DoS shapes from a hostile peer.
 
 ## Audit log
 
