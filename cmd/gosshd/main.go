@@ -16,8 +16,10 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -90,6 +92,19 @@ func run() error {
 			fmt.Fprintln(os.Stderr, "gosshd: warning: PermitRootLogin yes is advisory — gosshd does not map SSH users to system uids")
 		default:
 			return fmt.Errorf("sshd_config: unsupported PermitRootLogin %q", sc.PermitRootLogin)
+		}
+		// Apply sshd_config Port only when the operator didn't pass
+		// -listen. Rewriting the host:port pair preserves any -listen
+		// bind address; bare port from config replaces just the port.
+		if sc.Port != 0 && !cliutil.FlagSet("listen") {
+			host, _, herr := net.SplitHostPort(*listen)
+			if herr != nil {
+				// Default "0.0.0.0:2222" splits cleanly, so this
+				// path is only reachable if someone changed the
+				// default to something SplitHostPort can't handle.
+				host = "0.0.0.0"
+			}
+			*listen = net.JoinHostPort(host, strconv.Itoa(sc.Port))
 		}
 	}
 

@@ -82,10 +82,11 @@ func run() error {
 		remote = srcBody
 	}
 
-	user, host, remotePort, err := cliutil.ParseTarget(target, *port)
+	user, host, remotePort, portExplicit, err := cliutil.ParseTarget(target, *port)
 	if err != nil {
 		return err
 	}
+	portFromUser := portExplicit || cliutil.FlagSet("p")
 
 	// ssh_config: auto-load ~/.ssh/config unless -F overrides.
 	configFile := *configPath
@@ -108,7 +109,7 @@ func run() error {
 	if cfgHost.Hostname != "" && cfgHost.Hostname != host {
 		host = cfgHost.Hostname
 	}
-	if cfgHost.Port != 0 && *port == 22 {
+	if cfgHost.Port != 0 && !portFromUser {
 		remotePort = cfgHost.Port
 	}
 	if user == "" && cfgHost.User != "" {
@@ -162,29 +163,45 @@ func run() error {
 	return scp.Download(c.Raw(), remote, local, *recursive)
 }
 
-// splitRemote: if s contains a colon outside an IPv6 bracket, split
-// off the "host[:port]" prefix from the path suffix.
+// splitRemote splits a `[user@]host[:port]:path` SCP argument into
+// (remote, path), where `remote` is the `[user@]host[:port]` prefix
+// in a form ParseTarget accepts. If s has no remote component,
+// returns ("", s). IPv6 hosts use `[addr]` bracketed form and may or
+// may not include a user@ prefix; the bracket + colon logic runs
+// AFTER any user@ is peeled off, so `alice@[::1]:/tmp/x` parses.
 func splitRemote(s string) (remote, path string) {
+	userPrefix := ""
+	if at := strings.LastIndex(s, "@"); at >= 0 {
+		// Preserve the user@ so ParseTarget sees the whole token,
+		// but do bracket scanning on the host portion only.
+		userPrefix = s[:at+1]
+		s = s[at+1:]
+	}
 	if strings.HasPrefix(s, "[") {
 		end := strings.Index(s, "]")
 		if end < 0 {
-			return "", s
+			return "", userPrefix + s
 		}
-		// [ipv6]:rest — everything until the first ':' after ']'
+		// [ipv6]:rest — rest is either :path or :port:path
 		rest := s[end+1:]
 		if !strings.HasPrefix(rest, ":") {
-			return "", s
+			return "", userPrefix + s
 		}
-		// s = [ipv6]:path OR [ipv6]:port:path
+		// Look past the first ':' — if there's another ':' before
+		// the path separator's typical content, the token between
+		// them is a port. But SCP grammar is `[host]:port:path`, so
+		// the second ':' terminates the port.
 		pathIdx := strings.Index(rest[1:], ":")
 		if pathIdx < 0 {
-			return s[:end+1], rest[1:]
+			// [ipv6]:path
+			return userPrefix + s[:end+1], rest[1:]
 		}
-		return s[:end+1+1+pathIdx], rest[1+pathIdx+1:]
+		// [ipv6]:port:path
+		return userPrefix + s[:end+1+1+pathIdx], rest[1+pathIdx+1:]
 	}
 	i := strings.Index(s, ":")
 	if i < 0 {
-		return "", s
+		return "", userPrefix + s
 	}
-	return s[:i], s[i+1:]
+	return userPrefix + s[:i], s[i+1:]
 }

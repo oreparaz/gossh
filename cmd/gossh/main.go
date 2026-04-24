@@ -62,10 +62,13 @@ func run() (int, error) {
 		return 2, errors.New("usage: gossh [flags] [user@]host[:port] [command...]")
 	}
 	target := flag.Arg(0)
-	user, host, remotePort, err := cliutil.ParseTarget(target, *port)
+	user, host, remotePort, portExplicit, err := cliutil.ParseTarget(target, *port)
 	if err != nil {
 		return 2, err
 	}
+	// Track whether the port was user-supplied from any source, so
+	// ssh_config can only fill in when we have no signal at all.
+	portFromUser := portExplicit || cliutil.FlagSet("p")
 
 	// Apply ssh_config values before CLI overrides. If -F was not
 	// given, auto-load ~/.ssh/config when present — that's the
@@ -93,7 +96,7 @@ func run() (int, error) {
 	if cfgHost.Hostname != "" && cfgHost.Hostname != host {
 		host = cfgHost.Hostname
 	}
-	if cfgHost.Port != 0 && *port == 22 {
+	if cfgHost.Port != 0 && !portFromUser {
 		remotePort = cfgHost.Port
 	}
 	if user == "" && cfgHost.User != "" {

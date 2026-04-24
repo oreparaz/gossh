@@ -34,8 +34,11 @@ func FlagSet(name string) bool {
 
 // ParseTarget splits a "[user@]host[:port]" or "[user@][ipv6]:port"
 // argument into its components. The IPv6 case is recognised by a
-// leading '[' on the host portion.
-func ParseTarget(s string, defPort int) (user, host string, port int, err error) {
+// leading '[' on the host portion. portExplicit reports whether the
+// target string itself specified a port — callers need this to decide
+// precedence vs. ssh_config, because `alias:22` must beat a config
+// `Port` even though the value coincides with the default.
+func ParseTarget(s string, defPort int) (user, host string, port int, portExplicit bool, err error) {
 	port = defPort
 	if at := strings.LastIndex(s, "@"); at >= 0 {
 		user = s[:at]
@@ -44,32 +47,31 @@ func ParseTarget(s string, defPort int) (user, host string, port int, err error)
 	if strings.HasPrefix(s, "[") {
 		end := strings.Index(s, "]")
 		if end < 0 {
-			return "", "", 0, fmt.Errorf("unterminated IPv6 bracket in %q", s)
+			return "", "", 0, false, fmt.Errorf("unterminated IPv6 bracket in %q", s)
 		}
 		host = s[1:end]
 		rest := s[end+1:]
 		if rest == "" {
-			return user, host, port, nil
+			return user, host, port, false, nil
 		}
 		if !strings.HasPrefix(rest, ":") {
-			return "", "", 0, fmt.Errorf("unexpected %q after IPv6", rest)
+			return "", "", 0, false, fmt.Errorf("unexpected %q after IPv6", rest)
 		}
 		p, perr := strconv.Atoi(rest[1:])
 		if perr != nil {
-			return "", "", 0, fmt.Errorf("bad port %q", rest[1:])
+			return "", "", 0, false, fmt.Errorf("bad port %q", rest[1:])
 		}
-		return user, host, p, nil
+		return user, host, p, true, nil
 	}
 	if i := strings.LastIndex(s, ":"); i >= 0 {
 		host = s[:i]
 		p, perr := strconv.Atoi(s[i+1:])
 		if perr != nil {
-			return "", "", 0, fmt.Errorf("bad port %q", s[i+1:])
+			return "", "", 0, false, fmt.Errorf("bad port %q", s[i+1:])
 		}
-		port = p
-		return user, host, port, nil
+		return user, host, p, true, nil
 	}
-	return user, s, port, nil
+	return user, s, port, false, nil
 }
 
 // ParseStrictHostKey maps the `-strict-host-key` flag value to a

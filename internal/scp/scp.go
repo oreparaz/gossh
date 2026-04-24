@@ -63,13 +63,26 @@ func Upload(client *ssh.Client, srcPath, dstPath string, recursive bool) error {
 	// For a directory upload dstPath is the receiving parent and the
 	// top-level D-line carries basename(srcPath) — matching OpenSSH
 	// scp -r semantics (contents go into dstPath/basename(src)/).
-	// For a file upload dstPath may be either a directory or a full
-	// file path; splitRemote separates the two cases.
+	//
+	// For a file upload, a dstPath that ends in '/' (or is exactly
+	// "/") is the operator saying "drop it into this directory under
+	// its original name" — e.g. `gossh-scp ./file host:/tmp/`. In
+	// that case we must NOT split the last path component off, or
+	// the file lands at /tmp instead of /tmp/file. A dstPath without
+	// a trailing slash is a full destination path: split off the
+	// filename and use it verbatim.
 	var remoteTarget, topName string
-	if info.IsDir() {
+	switch {
+	case info.IsDir():
 		remoteTarget = dstPath
 		topName = filepath.Base(srcPath)
-	} else {
+	case dstPath == "" || strings.HasSuffix(dstPath, "/"):
+		remoteTarget = dstPath
+		if remoteTarget == "" {
+			remoteTarget = "."
+		}
+		topName = filepath.Base(srcPath)
+	default:
 		remoteTarget, topName = splitRemote(dstPath)
 		if topName == "" {
 			topName = filepath.Base(srcPath)
@@ -417,17 +430,49 @@ func readStderrSnippet(stderr io.Reader) string {
 	return strings.TrimSpace(string(b))
 }
 
-// refuseExistingSymlink blocks the TOCTOU-narrow case where the local
-// path is an attacker-planted symlink that would redirect a write or
-// an mkdir outside the destination tree. If the path doesn't exist
-// this is a no-op.
+// refuseExistingSymlink blocks the TOCTOU-narrow case where an
+// attacker-planted symlink would redirect a write or an mkdir outside
+// the intended destination tree. Every existing component from the
+// filesystem root (or drive root) up to the final target is checked;
+// any symlink anywhere in the chain is refused.
+//
+// Rationale: checking only the leaf lets a caller hand us
+// "dst/symlink/file.txt" where "symlink" points to /etc, and we'd
+// happily write /etc/file.txt. Permission / I/O errors are surfaced
+// instead of silently treated as "safe to proceed"; only ENOENT is
+// suppressed because "doesn't exist yet" is the normal download case.
 func refuseExistingSymlink(p string) error {
-	fi, err := os.Lstat(p)
+	abs, err := filepath.Abs(p)
 	if err != nil {
-		return nil // not present: nothing to check
+		return fmt.Errorf("scp: resolve %s: %w", p, err)
 	}
-	if fi.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("scp: refuse to write through existing symlink %s", p)
+	abs = filepath.Clean(abs)
+	// Walk every existing prefix from root → abs, Lstat each, refuse
+	// on first symlink or surface the first unexpected error.
+	parts := strings.Split(abs, string(filepath.Separator))
+	cur := ""
+	for i, seg := range parts {
+		if i == 0 && seg == "" {
+			cur = string(filepath.Separator) // Unix root
+			continue
+		}
+		if cur == "" {
+			cur = seg // Windows drive letter or first relative segment
+		} else if cur == string(filepath.Separator) {
+			cur += seg
+		} else {
+			cur += string(filepath.Separator) + seg
+		}
+		fi, err := os.Lstat(cur)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil // nothing from here down exists; safe
+			}
+			return fmt.Errorf("scp: lstat %s: %w", cur, err)
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("scp: refuse to write through existing symlink %s", cur)
+		}
 	}
 	return nil
 }

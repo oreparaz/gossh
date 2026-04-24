@@ -37,6 +37,11 @@ type ClientConfig struct {
 type clientSection struct {
 	Patterns []string
 	Opts     map[string]string
+	// Identities holds this section's IdentityFile directives in
+	// the order they appeared. Kept separate from Opts so paths
+	// containing spaces — e.g. `IdentityFile "~/my key"` — survive
+	// without being split by later reformatting.
+	Identities []string
 }
 
 // ResolveHost walks the sections in order and builds a ClientHost
@@ -55,11 +60,11 @@ func (c *ClientConfig) ResolveHost(host string) ClientHost {
 				merged[k] = v
 			}
 		}
-		// IdentityFile is additive.
-		if v, ok := sec.Opts["identityfile"]; ok {
-			for _, p := range strings.Fields(v) {
-				identities = append(identities, expandUser(p))
-			}
+		// IdentityFile is additive across all matching sections, in
+		// source order. Each entry is already a single full path —
+		// no splitting — so quoted paths with spaces survive.
+		for _, p := range sec.Identities {
+			identities = append(identities, expandUser(p))
 		}
 	}
 	out := ClientHost{Host: host}
@@ -97,7 +102,7 @@ func ParseClient(r io.Reader) (*ClientConfig, error) {
 	scanner := bufio.NewScanner(r)
 	lineNo := 0
 	flushCurrent := func() {
-		if len(current.Opts) > 0 {
+		if len(current.Opts) > 0 || len(current.Identities) > 0 {
 			c.Sections = append(c.Sections, current)
 		}
 	}
@@ -124,11 +129,7 @@ func ParseClient(r io.Reader) (*ClientConfig, error) {
 		if lk == "identityfile" {
 			// IdentityFile is accumulative: multiple lines contribute
 			// a list of candidate keys, not "last one wins".
-			if prev := current.Opts[lk]; prev != "" {
-				current.Opts[lk] = prev + " " + val
-			} else {
-				current.Opts[lk] = val
-			}
+			current.Identities = append(current.Identities, val)
 			continue
 		}
 		current.Opts[lk] = val
@@ -280,7 +281,30 @@ func parseKV(s string) (string, string, error) {
 	if rest == "" {
 		return "", "", fmt.Errorf("no value for key %q", key)
 	}
-	return key, rest, nil
+	return key, unquoteValue(rest), nil
+}
+
+// unquoteValue removes one layer of surrounding double quotes from a
+// config value and honours `\"` escapes within. Bare (unquoted) values
+// are returned as-is. This matches ssh_config(5)'s shell-like quoting
+// without importing a full shell parser — gossh only supports a small
+// subset of ssh_config, so one layer of quotes is all we need.
+func unquoteValue(s string) string {
+	if len(s) < 2 || s[0] != '"' || s[len(s)-1] != '"' {
+		return s
+	}
+	inner := s[1 : len(s)-1]
+	var b strings.Builder
+	b.Grow(len(inner))
+	for i := 0; i < len(inner); i++ {
+		if inner[i] == '\\' && i+1 < len(inner) && inner[i+1] == '"' {
+			b.WriteByte('"')
+			i++
+			continue
+		}
+		b.WriteByte(inner[i])
+	}
+	return b.String()
 }
 
 func truthy(s string) bool {

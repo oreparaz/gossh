@@ -105,3 +105,36 @@ User=bob`))
 		t.Fatalf("h=%+v", h)
 	}
 }
+
+// TestQuotedValues guards audit finding #6: ssh_config values wrapped
+// in double quotes must round-trip WITHOUT the quotes, and a quoted
+// IdentityFile path with spaces must survive as one identity — not
+// get split by whitespace tokenisation on the way out.
+func TestQuotedValues(t *testing.T) {
+	c, err := ParseClient(strings.NewReader(`Host q
+    Hostname "server.example"
+    UserKnownHostsFile "~/known hosts"
+    IdentityFile "~/my key"
+    IdentityFile ~/plain_key
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := c.ResolveHost("q")
+	if h.Hostname != "server.example" {
+		t.Errorf("Hostname = %q, want %q", h.Hostname, "server.example")
+	}
+	// UserKnownHostsFile expands ~ and preserves the space.
+	if !strings.HasSuffix(h.KnownHosts, "/known hosts") {
+		t.Errorf("KnownHosts = %q, want suffix %q", h.KnownHosts, "/known hosts")
+	}
+	if len(h.IdentityFiles) != 2 {
+		t.Fatalf("IdentityFiles count = %d, want 2: %v", len(h.IdentityFiles), h.IdentityFiles)
+	}
+	if !strings.HasSuffix(h.IdentityFiles[0], "/my key") {
+		t.Errorf("IdentityFiles[0] = %q, want suffix %q", h.IdentityFiles[0], "/my key")
+	}
+	if !strings.HasSuffix(h.IdentityFiles[1], "/plain_key") {
+		t.Errorf("IdentityFiles[1] = %q, want suffix %q", h.IdentityFiles[1], "/plain_key")
+	}
+}

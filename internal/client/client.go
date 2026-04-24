@@ -64,9 +64,16 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 		cfg.ConnectTimeout = 10 * time.Second
 	}
 
-	// Host-key verifier.
+	// Host-key verifier. Default to ~/.ssh/known_hosts, but if HOME
+	// can't be resolved we refuse to fall back to a cwd-relative
+	// path: in strict mode that would trust an attacker-planted file
+	// in the working directory, and in TOFU mode it would write new
+	// trust state there. Caller must pass KnownHostsPath explicitly.
 	if cfg.KnownHostsPath == "" {
-		home, _ := os.UserHomeDir()
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			return nil, fmt.Errorf("client: cannot resolve home directory for known_hosts (%v); pass -known-hosts explicitly", err)
+		}
 		cfg.KnownHostsPath = filepath.Join(home, ".ssh", "known_hosts")
 	}
 	verifier, err := knownhosts.New(cfg.KnownHostsPath, cfg.HostCheckMode)
