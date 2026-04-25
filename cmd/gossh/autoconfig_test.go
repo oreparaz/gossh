@@ -37,7 +37,7 @@ func TestGosshAutoloadsDotSSHConfig(t *testing.T) {
 	// Build the gossh binary.
 	binDir := t.TempDir()
 	bin := filepath.Join(binDir, "gossh")
-	build := exec.Command("/usr/local/go/bin/go", "build", "-o", bin,
+	build := exec.Command(goBinary(), "build", "-o", bin,
 		"github.com/oreparaz/gossh/cmd/gossh")
 	build.Stderr = os.Stderr
 	if err := build.Run(); err != nil {

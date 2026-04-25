@@ -67,7 +67,7 @@ func setupE2E(t *testing.T) *e2eRig {
 		{gossh, "github.com/oreparaz/gossh/cmd/gossh"},
 		{gosshSCP, "github.com/oreparaz/gossh/cmd/gossh-scp"},
 	} {
-		cmd := exec.Command("/usr/local/go/bin/go", "build", "-o", pair[0], pair[1])
+		cmd := exec.Command(goBinary(), "build", "-o", pair[0], pair[1])
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
 			t.Fatalf("build %s: %v", pair[1], err)

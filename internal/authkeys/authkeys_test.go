@@ -108,7 +108,14 @@ func TestParseRestrictCanBeRelaxed(t *testing.T) {
 func TestParseFileRejectsWorldWritable(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "authorized_keys")
-	if err := os.WriteFile(path, []byte(samplePubEd25519+"\n"), 0o666); err != nil {
+	if err := os.WriteFile(path, []byte(samplePubEd25519+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// os.WriteFile honours the process umask, so we can't rely on a
+	// 0o666 perm arg producing a world-writable file (under the
+	// default 0o022 umask on most Linux distros and CI runners,
+	// 0o666 becomes 0o644). Chmod bypasses the umask.
+	if err := os.Chmod(path, 0o666); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ParseFile(path); err == nil {

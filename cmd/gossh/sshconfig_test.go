@@ -28,7 +28,7 @@ func TestGosshHonoursSSHConfig(t *testing.T) {
 	}
 	dir := t.TempDir()
 	gossh := filepath.Join(dir, "gossh")
-	build := exec.Command("/usr/local/go/bin/go", "build", "-o", gossh, "github.com/oreparaz/gossh/cmd/gossh")
+	build := exec.Command(goBinary(), "build", "-o", gossh, "github.com/oreparaz/gossh/cmd/gossh")
 	build.Stderr = os.Stderr
 	if err := build.Run(); err != nil {
 		t.Fatal(err)
