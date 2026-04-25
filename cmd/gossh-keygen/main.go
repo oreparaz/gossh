@@ -15,7 +15,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/oscar/gossh/internal/hostkey"
+	"github.com/oreparaz/gossh/internal/hostkey"
 )
 
 func main() {

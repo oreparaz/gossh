@@ -14,10 +14,10 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/oscar/gossh/internal/audit"
-	"github.com/oscar/gossh/internal/authkeys"
-	"github.com/oscar/gossh/internal/hostkey"
-	"github.com/oscar/gossh/internal/server"
+	"github.com/oreparaz/gossh/internal/audit"
+	"github.com/oreparaz/gossh/internal/authkeys"
+	"github.com/oreparaz/gossh/internal/hostkey"
+	"github.com/oreparaz/gossh/internal/server"
 	"os"
 )
 

@@ -14,9 +14,9 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/oscar/gossh/internal/authkeys"
-	"github.com/oscar/gossh/internal/hostkey"
-	"github.com/oscar/gossh/internal/server"
+	"github.com/oreparaz/gossh/internal/authkeys"
+	"github.com/oreparaz/gossh/internal/hostkey"
+	"github.com/oreparaz/gossh/internal/server"
 )
 
 // TestGosshHonoursSSHConfig boots a gosshd, writes an ssh_config that
@@ -28,7 +28,7 @@ func TestGosshHonoursSSHConfig(t *testing.T) {
 	}
 	dir := t.TempDir()
 	gossh := filepath.Join(dir, "gossh")
-	build := exec.Command("/usr/local/go/bin/go", "build", "-o", gossh, "github.com/oscar/gossh/cmd/gossh")
+	build := exec.Command("/usr/local/go/bin/go", "build", "-o", gossh, "github.com/oreparaz/gossh/cmd/gossh")
 	build.Stderr = os.Stderr
 	if err := build.Run(); err != nil {
 		t.Fatal(err)

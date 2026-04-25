@@ -13,9 +13,9 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/oscar/gossh/internal/authkeys"
-	"github.com/oscar/gossh/internal/hostkey"
-	"github.com/oscar/gossh/internal/server"
+	"github.com/oreparaz/gossh/internal/authkeys"
+	"github.com/oreparaz/gossh/internal/hostkey"
+	"github.com/oreparaz/gossh/internal/server"
 )
 
 // buildCustomRig builds a harness where we control the *contents* of

@@ -25,10 +25,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/oscar/gossh/internal/client"
-	"github.com/oscar/gossh/internal/cliutil"
-	"github.com/oscar/gossh/internal/scp"
-	"github.com/oscar/gossh/internal/sshconfig"
+	"github.com/oreparaz/gossh/internal/client"
+	"github.com/oreparaz/gossh/internal/cliutil"
+	"github.com/oreparaz/gossh/internal/scp"
+	"github.com/oreparaz/gossh/internal/sshconfig"
 )
 
 func main() {

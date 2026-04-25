@@ -5,7 +5,7 @@ import (
 	"io"
 	"os/exec"
 
-	"github.com/oscar/gossh/internal/pty"
+	"github.com/oreparaz/gossh/internal/pty"
 )
 
 // runPTY starts the shell attached to a fresh pseudo-terminal and

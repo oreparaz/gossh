@@ -1,5 +1,5 @@
 GO ?= /usr/local/go/bin/go
-PKG := github.com/oscar/gossh
+PKG := github.com/oreparaz/gossh
 BIN_DIR := bin
 LDFLAGS := -s -w
 

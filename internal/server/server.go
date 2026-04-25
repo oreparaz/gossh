@@ -23,10 +23,10 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/oscar/gossh/internal/audit"
-	"github.com/oscar/gossh/internal/authkeys"
-	"github.com/oscar/gossh/internal/forward"
-	"github.com/oscar/gossh/internal/sshcrypto"
+	"github.com/oreparaz/gossh/internal/audit"
+	"github.com/oreparaz/gossh/internal/authkeys"
+	"github.com/oreparaz/gossh/internal/forward"
+	"github.com/oreparaz/gossh/internal/sshcrypto"
 )
 
 // Config is the server configuration.

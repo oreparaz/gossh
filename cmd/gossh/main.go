@@ -19,10 +19,10 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/oscar/gossh/internal/client"
-	"github.com/oscar/gossh/internal/cliutil"
-	"github.com/oscar/gossh/internal/forward"
-	"github.com/oscar/gossh/internal/sshconfig"
+	"github.com/oreparaz/gossh/internal/client"
+	"github.com/oreparaz/gossh/internal/cliutil"
+	"github.com/oreparaz/gossh/internal/forward"
+	"github.com/oreparaz/gossh/internal/sshconfig"
 )
 
 func main() {

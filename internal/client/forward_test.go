@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oscar/gossh/internal/client"
-	"github.com/oscar/gossh/internal/forward"
-	"github.com/oscar/gossh/internal/knownhosts"
+	"github.com/oreparaz/gossh/internal/client"
+	"github.com/oreparaz/gossh/internal/forward"
+	"github.com/oreparaz/gossh/internal/knownhosts"
 )
 
 // startEcho starts a localhost echo server and returns its address.

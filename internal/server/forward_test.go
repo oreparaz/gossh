@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oscar/gossh/internal/server"
+	"github.com/oreparaz/gossh/internal/server"
 )
 
 // startEchoServer starts a tiny TCP echo server and returns its address.

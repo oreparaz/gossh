@@ -1,4 +1,4 @@
-module github.com/oscar/gossh
+module github.com/oreparaz/gossh
 
 go 1.25.0
 

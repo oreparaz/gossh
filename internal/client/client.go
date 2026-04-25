@@ -15,9 +15,9 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/oscar/gossh/internal/hostkey"
-	"github.com/oscar/gossh/internal/knownhosts"
-	"github.com/oscar/gossh/internal/sshcrypto"
+	"github.com/oreparaz/gossh/internal/hostkey"
+	"github.com/oreparaz/gossh/internal/knownhosts"
+	"github.com/oreparaz/gossh/internal/sshcrypto"
 )
 
 // Config captures what's needed to connect.

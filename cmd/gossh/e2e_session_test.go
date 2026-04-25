@@ -29,9 +29,9 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/oscar/gossh/internal/authkeys"
-	"github.com/oscar/gossh/internal/hostkey"
-	"github.com/oscar/gossh/internal/server"
+	"github.com/oreparaz/gossh/internal/authkeys"
+	"github.com/oreparaz/gossh/internal/hostkey"
+	"github.com/oreparaz/gossh/internal/server"
 )
 
 type e2eRig struct {
@@ -64,8 +64,8 @@ func setupE2E(t *testing.T) *e2eRig {
 	gossh := filepath.Join(binDir, "gossh")
 	gosshSCP := filepath.Join(binDir, "gossh-scp")
 	for _, pair := range [][2]string{
-		{gossh, "github.com/oscar/gossh/cmd/gossh"},
-		{gosshSCP, "github.com/oscar/gossh/cmd/gossh-scp"},
+		{gossh, "github.com/oreparaz/gossh/cmd/gossh"},
+		{gosshSCP, "github.com/oreparaz/gossh/cmd/gossh-scp"},
 	} {
 		cmd := exec.Command("/usr/local/go/bin/go", "build", "-o", pair[0], pair[1])
 		cmd.Stderr = os.Stderr

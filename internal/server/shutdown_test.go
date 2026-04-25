@@ -12,11 +12,11 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/oscar/gossh/internal/authkeys"
-	"github.com/oscar/gossh/internal/client"
-	"github.com/oscar/gossh/internal/hostkey"
-	"github.com/oscar/gossh/internal/knownhosts"
-	"github.com/oscar/gossh/internal/server"
+	"github.com/oreparaz/gossh/internal/authkeys"
+	"github.com/oreparaz/gossh/internal/client"
+	"github.com/oreparaz/gossh/internal/hostkey"
+	"github.com/oreparaz/gossh/internal/knownhosts"
+	"github.com/oreparaz/gossh/internal/server"
 )
 
 // TestShutdownTearsDownActiveSession kicks off a long-running remote

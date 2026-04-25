@@ -9,8 +9,8 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/oscar/gossh/internal/client"
-	"github.com/oscar/gossh/internal/knownhosts"
+	"github.com/oreparaz/gossh/internal/client"
+	"github.com/oreparaz/gossh/internal/knownhosts"
 )
 
 // TestSignalForwardingKillsProcessGroup runs a shell that traps

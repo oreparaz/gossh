@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/oscar/gossh/internal/knownhosts"
+	"github.com/oreparaz/gossh/internal/knownhosts"
 )
 
 // MultiFlag is a flag.Value that accumulates every -flag=VALUE

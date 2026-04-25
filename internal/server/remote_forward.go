@@ -10,7 +10,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/oscar/gossh/internal/audit"
+	"github.com/oreparaz/gossh/internal/audit"
 )
 
 // remoteForwards tracks the listeners a single SSH connection has

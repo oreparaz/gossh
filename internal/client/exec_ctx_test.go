@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oscar/gossh/internal/client"
-	"github.com/oscar/gossh/internal/knownhosts"
+	"github.com/oreparaz/gossh/internal/client"
+	"github.com/oreparaz/gossh/internal/knownhosts"
 )
 
 // TestExecContextCancelTerminatesRemote verifies that cancelling ctx

@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oscar/gossh/internal/client"
-	"github.com/oscar/gossh/internal/forward"
-	"github.com/oscar/gossh/internal/knownhosts"
+	"github.com/oreparaz/gossh/internal/client"
+	"github.com/oreparaz/gossh/internal/forward"
+	"github.com/oreparaz/gossh/internal/knownhosts"
 )
 
 // TestExecLargeOutput writes many MB to stdout on the remote and

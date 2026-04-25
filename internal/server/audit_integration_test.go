@@ -16,12 +16,12 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/oscar/gossh/internal/audit"
-	"github.com/oscar/gossh/internal/authkeys"
-	"github.com/oscar/gossh/internal/client"
-	"github.com/oscar/gossh/internal/hostkey"
-	"github.com/oscar/gossh/internal/knownhosts"
-	"github.com/oscar/gossh/internal/server"
+	"github.com/oreparaz/gossh/internal/audit"
+	"github.com/oreparaz/gossh/internal/authkeys"
+	"github.com/oreparaz/gossh/internal/client"
+	"github.com/oreparaz/gossh/internal/hostkey"
+	"github.com/oreparaz/gossh/internal/knownhosts"
+	"github.com/oreparaz/gossh/internal/server"
 )
 
 // syncBuf is a bytes.Buffer guarded by a mutex so tests can read it

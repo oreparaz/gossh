@@ -14,9 +14,9 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/oscar/gossh/internal/authkeys"
-	"github.com/oscar/gossh/internal/hostkey"
-	"github.com/oscar/gossh/internal/server"
+	"github.com/oreparaz/gossh/internal/authkeys"
+	"github.com/oreparaz/gossh/internal/hostkey"
+	"github.com/oreparaz/gossh/internal/server"
 )
 
 // TestGosshBinaryAgainstGosshd builds both binaries and uses the
@@ -31,7 +31,7 @@ func TestGosshBinaryAgainstGosshd(t *testing.T) {
 	// Build the gossh binary into a test-local path.
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "gossh")
-	build := exec.Command("/usr/local/go/bin/go", "build", "-o", bin, "github.com/oscar/gossh/cmd/gossh")
+	build := exec.Command("/usr/local/go/bin/go", "build", "-o", bin, "github.com/oreparaz/gossh/cmd/gossh")
 	build.Stderr = os.Stderr
 	if err := build.Run(); err != nil {
 		t.Fatalf("build: %v", err)
@@ -121,7 +121,7 @@ func TestGosshdBinarySmoke(t *testing.T) {
 	}
 	dir := t.TempDir()
 	gosshd := filepath.Join(dir, "gosshd")
-	build := exec.Command("/usr/local/go/bin/go", "build", "-o", gosshd, "github.com/oscar/gossh/cmd/gosshd")
+	build := exec.Command("/usr/local/go/bin/go", "build", "-o", gosshd, "github.com/oreparaz/gossh/cmd/gosshd")
 	build.Stderr = os.Stderr
 	if err := build.Run(); err != nil {
 		t.Fatalf("build: %v", err)
