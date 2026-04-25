@@ -164,7 +164,11 @@ treated as "drop into this directory under its own basename", not
 
 ## Cryptographic allowlist
 
-See `internal/sshcrypto/algs.go`:
+The server's lists stay tight; the client's widens for legacy
+interop. See `internal/sshcrypto/algs.go` and the table in
+`SECURITY.md`.
+
+**Server (`gosshd`)** — what it advertises:
 
 - **KEX**: `curve25519-sha256`, `curve25519-sha256@libssh.org`
 - **Ciphers**: `chacha20-poly1305@openssh.com`,
@@ -174,9 +178,16 @@ See `internal/sshcrypto/algs.go`:
 - **Host-key / user-key signatures**: `ssh-ed25519`,
   `rsa-sha2-512`, `rsa-sha2-256`
 
-Refused (automated test in `algs_test.go`):
+**Client (`gossh`)** — server lists plus:
+
+- **KEX**: `ecdh-sha2-nistp{256,384,521}`,
+  `diffie-hellman-group16-sha512`,
+  `diffie-hellman-group14-sha256`
+- **Ciphers**: `aes{128,192,256}-ctr`
+- **MACs**: `hmac-sha2-512`, `hmac-sha2-256` (non-ETM)
+
+Refused on **both** sides (automated test in `algs_test.go`):
 - `ssh-rsa` (SHA-1), `ssh-dss`
-- `diffie-hellman-group1-sha1`, `diffie-hellman-group14-sha1`,
-  `ecdh-sha2-nistp*`
+- `diffie-hellman-group1-sha1`, `diffie-hellman-group14-sha1`
 - `3des-cbc`, `aes*-cbc`, `blowfish-cbc`, `arcfour*`
 - `hmac-sha1`, `hmac-md5`

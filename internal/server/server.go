@@ -488,7 +488,7 @@ func (s *Server) serverConfig(remoteStr string, log *slog.Logger) *ssh.ServerCon
 		// Password / keyboard-interactive are intentionally nil
 		// — we only accept public keys.
 	}
-	sshcrypto.ApplyToConfig(&cfg.Config)
+	sshcrypto.ApplyToServerConfig(&cfg.Config)
 	for _, hk := range s.cfg.HostKeys {
 		cfg.AddHostKey(hk)
 	}

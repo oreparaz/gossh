@@ -25,7 +25,14 @@ Threats **outside** the model:
 ## Cryptographic allowlist
 
 Centralised in `internal/sshcrypto/algs.go`. The server and client
-negotiate using the same lists:
+deliberately maintain **separate** lists: the server's surface stays
+tight because operators control both ends of any deployment, while
+the client's surface widens enough to talk to real-world legacy
+servers. Everything still in either list is considered
+cryptographically sound — there is no SHA-1, no <2048-bit DH, no CBC,
+no RC4 anywhere.
+
+### Server (`gosshd` advertises only these)
 
 | Category      | Algorithms                                          |
 |---------------|-----------------------------------------------------|
@@ -34,9 +41,28 @@ negotiate using the same lists:
 | MAC (ETM)     | `hmac-sha2-512-etm@openssh.com`, `hmac-sha2-256-etm@openssh.com` |
 | Host key / user key | `ssh-ed25519`, `rsa-sha2-512`, `rsa-sha2-256` |
 
-Everything else (ssh-rsa/SHA-1, DH group1/14-sha1, NIST ECDH, AES-CBC,
-3DES, RC4, HMAC-SHA1) is refused. See `sshcrypto/algs_test.go` for
-the automated check.
+### Client (`gossh` accepts these from the remote)
+
+The client's list is the server list *plus* a small set of legacy
+additions, in preference order — curve25519 / AEAD / ETM are still
+chosen first whenever both sides support them:
+
+| Category | Server list, plus additions on client |
+|---|---|
+| KEX | `ecdh-sha2-nistp256`, `ecdh-sha2-nistp384`, `ecdh-sha2-nistp521` (NIST P-curve ECDH; OpenSSH ≥ 5.7), `diffie-hellman-group16-sha512`, `diffie-hellman-group14-sha256` (modern MODP DH; OpenSSH ≥ 7.3) |
+| Cipher | `aes256-ctr`, `aes192-ctr`, `aes128-ctr` (non-AEAD, requires a strong MAC; many appliances still default to CTR) |
+| MAC | `hmac-sha2-512`, `hmac-sha2-256` (non-ETM SHA-2; for servers predating OpenSSH 6.2's ETM addition) |
+| Host key / user key | *(no extras — same set as server)* |
+
+Everything else (ssh-rsa/SHA-1, DH group1, group14-sha1, AES-CBC,
+3DES, RC4, HMAC-SHA1, MD5, DSA) is refused on **both** sides.
+`sshcrypto/algs_test.go` enforces:
+- the forbidden list never appears in any list;
+- the server list is curve25519-only / AEAD-only / ETM-only;
+- the client list is a superset of the server list (so gossh can
+  always reach gosshd);
+- the exact set of client-only legacy additions is pinned, so any
+  future change forces a deliberate audit.
 
 ## Server hardening
 

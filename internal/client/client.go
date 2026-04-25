@@ -98,7 +98,7 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 		ClientVersion:     clientVersion,
 		Timeout:           cfg.ConnectTimeout,
 	}
-	sshcrypto.ApplyToConfig(&clientCfg.Config)
+	sshcrypto.ApplyToClientConfig(&clientCfg.Config)
 
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
 

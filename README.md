@@ -120,7 +120,6 @@ See [`SECURITY.md`](SECURITY.md) for rationale. In short:
 - Password / keyboard-interactive auth — **use keys**
 - SSHv1 — obsolete
 - Legacy ciphers (3DES, CBC, RC4) and SHA-1 signatures
-- NIST ECDH (curve25519 is enough)
 - GSSAPI / Kerberos
 - X11 forwarding
 - Agent forwarding (`-A`) — too easy to misuse
