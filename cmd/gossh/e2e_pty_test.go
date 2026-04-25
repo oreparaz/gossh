@@ -33,15 +33,15 @@ import (
 
 // TestE2EPTYInteractiveShellAndResize is the one test that exercises
 // the whole interactive stack at once:
-//   1. Open a local PTY at 24x80 and TERM=e2e-xterm.
-//   2. Exec `gossh devbox` (no command → Shell mode, which sets up
-//      termios + SIGWINCH forwarding).
-//   3. Read the first prompt, inject `stty size`, expect "24 80".
-//   4. Inject a uniquely-marked echo to prove bytes round-trip.
-//   5. Resize master to 40x120, inject `stty size` again, expect
-//      "40 120" within a bounded deadline — proving window-change
-//      reached the remote and updated its pty termios.
-//   6. Send `exit` to unwind cleanly.
+//  1. Open a local PTY at 24x80 and TERM=e2e-xterm.
+//  2. Exec `gossh devbox` (no command → Shell mode, which sets up
+//     termios + SIGWINCH forwarding).
+//  3. Read the first prompt, inject `stty size`, expect "24 80".
+//  4. Inject a uniquely-marked echo to prove bytes round-trip.
+//  5. Resize master to 40x120, inject `stty size` again, expect
+//     "40 120" within a bounded deadline — proving window-change
+//     reached the remote and updated its pty termios.
+//  6. Send `exit` to unwind cleanly.
 //
 // One test body, four independent regressions caught.
 func TestE2EPTYInteractiveShellAndResize(t *testing.T) {

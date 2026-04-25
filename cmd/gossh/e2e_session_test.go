@@ -259,11 +259,11 @@ func TestE2ESCPRecursiveRoundTrip(t *testing.T) {
 	src := filepath.Join(t.TempDir(), "src_tree")
 	mustMkdir(t, filepath.Join(src, "nested", "deeper"))
 	payloads := map[string][]byte{
-		"top.txt":                   []byte("hello from top\n"),
-		"-dash.txt":                 []byte("dash-prefix ok\n"),
-		"big.bin":                   bytesRand(t, 4096),
-		"nested/inside.txt":         []byte("nested content\n"),
-		"nested/deeper/deep.bin":    bytesRand(t, 2048),
+		"top.txt":                []byte("hello from top\n"),
+		"-dash.txt":              []byte("dash-prefix ok\n"),
+		"big.bin":                bytesRand(t, 4096),
+		"nested/inside.txt":      []byte("nested content\n"),
+		"nested/deeper/deep.bin": bytesRand(t, 2048),
 	}
 	for rel, data := range payloads {
 		if err := os.WriteFile(filepath.Join(src, rel), data, 0o644); err != nil {
@@ -353,9 +353,10 @@ func TestE2ESCPSymlinkWriteRefused(t *testing.T) {
 // TestE2ETmuxSessionPersistsAcrossConnections spins up a detached tmux
 // server on the remote, then uses three SEPARATE gossh connections
 // (each re-exec'ing nc via the ProxyCommand) to:
-//   1. create the session,
-//   2. send a command into its pane,
-//   3. capture the pane and verify the output is there.
+//  1. create the session,
+//  2. send a command into its pane,
+//  3. capture the pane and verify the output is there.
+//
 // This stresses the session.exec path, PTY-less tmux control, and
 // that tmux's unix-socket state on the server is unaffected by our
 // connection churn.

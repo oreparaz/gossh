@@ -9,22 +9,44 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
           check-latest: true
+          cache: true
+      - name: install integration deps
+        # netcat backs the ProxyCommand tests; tmux backs the
+        # session-persistence test; openssh-{client,server} back
+        # the interop tests against the system ssh / sshd.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            netcat-openbsd tmux openssh-client openssh-server
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "$unformatted"
+            echo "::error::go files need formatting; run 'go fmt ./...'"
+            exit 1
+          fi
       - name: go vet
-        run: go vet ./...
+        run: make vet GO=go
       - name: go build
-        run: go build ./...
-      - name: go test
-        run: go test -race -timeout 240s ./...
-  # A short fuzz smoke — catches regressions in the parsers without
-  # running forever.
+        run: make build GO=go
+      - name: go test (-race, all packages)
+        # Covers unit + integration + e2e (TestE2E*, TestSCP*,
+        # TestProxyCommand*, real-PTY tests via creack/pty).
+        # Same command as `make test` but with GO=go so we use
+        # the toolchain installed by setup-go.
+        run: make test GO=go
+
   fuzz:
+    # 70-second smoke per parser. Real fuzz runs go on a dev box;
+    # CI just guards against trivial regressions in the corpora.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -33,6 +55,7 @@ jobs:
         with:
           go-version: "1.25"
           check-latest: true
+          cache: true
       - run: go test -fuzz=FuzzParse -fuzztime=30s ./internal/authkeys/
       - run: go test -fuzz=FuzzParseLocal -fuzztime=20s ./internal/forward/
       - run: go test -fuzz=FuzzParseClient -fuzztime=20s ./internal/sshconfig/
