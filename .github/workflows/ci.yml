@@ -44,6 +44,32 @@ jobs:
         # the toolchain installed by setup-go.
         run: make test GO=go
 
+  multi-distro:
+    # Cross-distro compatibility matrix. The host runner stays on
+    # ubuntu-latest (so actions/checkout, etc. just work), and we
+    # use `docker run` to execute the test suite inside each target
+    # distro. Same scripts/distro-test.sh that `make docker-test`
+    # uses locally.
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: test  # avoid burning matrix minutes if the main test job is broken
+    strategy:
+      fail-fast: false  # show all distro failures, not just the first
+      matrix:
+        image:
+          - alpine:edge        # musl + busybox; highest signal
+          - debian:12          # glibc-stable canary
+          - fedora:latest      # rolling RPM, recent OpenSSH
+          - ubuntu:24.04       # current Ubuntu LTS
+    steps:
+      - uses: actions/checkout@v4
+      - name: test in ${{ matrix.image }}
+        run: |
+          docker run --rm \
+            -v "$PWD:/src:ro" \
+            "${{ matrix.image }}" \
+            /src/scripts/distro-test.sh
+
   fuzz:
     # 70-second smoke per parser. Real fuzz runs go on a dev box;
     # CI just guards against trivial regressions in the corpora.

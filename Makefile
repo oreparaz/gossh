@@ -3,7 +3,11 @@ PKG := github.com/oreparaz/gossh
 BIN_DIR := bin
 LDFLAGS := -s -w
 
-.PHONY: all build build-server build-client build-keygen build-scp test test-short test-interop e2e fmt vet lint clean tidy coverage
+.PHONY: all build build-server build-client build-keygen build-scp test test-short test-interop e2e fmt vet lint clean tidy coverage docker-test
+
+# Multi-distro container test matrix. Mirrors the CI multi-distro
+# job so you can run the same checks locally with `make docker-test`.
+DOCKER_DISTROS ?= alpine:edge debian:12 fedora:latest ubuntu:24.04
 
 all: build test
 
@@ -56,3 +60,17 @@ clean:
 coverage:
 	$(GO) test -race -coverprofile=coverage.out ./...
 	$(GO) tool cover -html=coverage.out -o coverage.html
+
+# Run `make test` in fresh containers for each distro in DOCKER_DISTROS.
+# Source tree is mounted read-only; the script copies it to a scratch
+# dir inside the container so build artefacts stay off the host.
+docker-test:
+	@set -e; for d in $(DOCKER_DISTROS); do \
+	    echo ""; echo "============================================================"; \
+	    echo "  docker-test: $$d"; \
+	    echo "============================================================"; \
+	    docker run --rm \
+	        -v "$$(pwd):/src:ro" \
+	        "$$d" \
+	        /src/scripts/distro-test.sh; \
+	done
