@@ -80,7 +80,10 @@ func (st *sessionState) runPTY(command string) {
 	<-resizeDone
 	_ = ses.Close() // master close → outputDone unblocks → send exit
 	<-outputDone
-	_ = st.ch.CloseWrite()
+	// Same ordering rationale as runPipe: enqueue exit-status before
+	// CloseWrite/Close so the client's Session.wait() observes the
+	// request before the requests channel terminates.
 	_ = sendExitStatus(st.ch, st.exitCode)
+	_ = st.ch.CloseWrite()
 	_ = st.ch.Close()
 }

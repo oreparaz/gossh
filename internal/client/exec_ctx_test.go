@@ -83,7 +83,12 @@ func TestManyRapidExecs(t *testing.T) {
 		status, err := c.Exec("echo ok", nil, &out, io.Discard)
 		if err != nil || status != 0 || out.String() != "ok\n" {
 			failures++
-			t.Logf("iter %d: status=%d err=%v out=%q", i, status, err, out.String())
+			// %T captures the concrete error type so we can
+			// distinguish ExitMissingError (no exit-status arrived)
+			// from a copy-error (io.EOF leaked from a stdout/stderr
+			// pipe) — both look the same under %v.
+			t.Logf("iter %d: status=%d err=%v err_type=%T out=%q",
+				i, status, err, err, out.String())
 		}
 	}
 	if failures > 0 {

@@ -1038,8 +1038,16 @@ func (st *sessionState) runPipe(shell string, args []string) {
 	}()
 	waitErr := cmd.Wait()
 	st.exitCode = exitStatus(waitErr)
-	_ = st.ch.CloseWrite()
+	// Send exit-status BEFORE EOF/Close. OpenSSH does this and
+	// x/crypto/ssh's client Session.wait() reads requests off the
+	// per-channel queue until the requests channel closes — sending
+	// CLOSE before the request is enqueued can race the client's
+	// loop into terminating with status==-1 (which we then surface
+	// as ExitMissingError or as a copy-error from a half-shut
+	// channel). Order matters; reverse of this was the cause of
+	// rare 1/250 EOF flakes seen on slower-scheduled CI runners.
 	_ = sendExitStatus(st.ch, st.exitCode)
+	_ = st.ch.CloseWrite()
 	_ = st.ch.Close()
 }
 
