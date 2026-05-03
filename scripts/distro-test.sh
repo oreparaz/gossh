@@ -64,6 +64,18 @@ fi
 # it ahead of time so every interop test has it.
 mkdir -p /run/sshd
 
+# Some minimal container images (notably fedora:latest) ship with
+# /etc/shadow's root entry locked (a leading `!`). OpenSSH's
+# allowed_user() refuses logins for locked accounts when UsePAM=no,
+# even with pubkey auth — the interop test then fails with
+# "User root not allowed because account is locked". Unlock the
+# account by setting an unguessable random password; this is a
+# no-op on images where root is already unlocked.
+if [ "$(id -u)" = "0" ] && command -v usermod >/dev/null 2>&1; then
+    usermod -p "$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')" root \
+        >/dev/null 2>&1 || true
+fi
+
 # Copy source out of the read-only mount so `make build` can write
 # bin/ without contaminating the host workspace.
 mkdir -p "$WORK"
