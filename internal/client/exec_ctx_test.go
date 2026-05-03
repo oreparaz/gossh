@@ -77,15 +77,6 @@ func TestManyRapidExecs(t *testing.T) {
 	defer c.Close()
 
 	const N = 250
-	// Tolerate up to ~2% of iterations losing a status event under
-	// pathological scheduling. The test's job is to catch a
-	// REGRESSION in the race rate (which used to be ~10-20%, then
-	// hit 100% before the fix); a hard zero is unrealistic on
-	// musl/CI where goroutine wakeups can lag enough that the
-	// server's channel close is observed before the exit-status
-	// event reaches the client. If failures climb back into
-	// double digits, the underlying race has come back.
-	const maxFailures = 5
 	failures := 0
 	for i := 0; i < N; i++ {
 		var out bytes.Buffer
@@ -95,9 +86,8 @@ func TestManyRapidExecs(t *testing.T) {
 			t.Logf("iter %d: status=%d err=%v out=%q", i, status, err, out.String())
 		}
 	}
-	if failures > maxFailures {
-		t.Fatalf("%d/%d rapid Execs failed (regression: exit-status race; tolerated up to %d)",
-			failures, N, maxFailures)
+	if failures > 0 {
+		t.Fatalf("%d/%d rapid Execs failed (regression: exit-status race)", failures, N)
 	}
 }
 
