@@ -90,6 +90,15 @@ func TestGosshAgainstOpenSSHSshd(t *testing.T) {
 	port := pl.Addr().(*net.TCPAddr).Port
 	pl.Close()
 
+	// `UsePAM no` matters on glibc distros whose PAM stack rejects
+	// root logins under sshd by default (Fedora is the example we
+	// hit). On Alpine, openssh-server is built without PAM and the
+	// directive itself is unrecognised, so we omit it there.
+	usePAMLine := "UsePAM no"
+	if _, err := os.Stat("/etc/alpine-release"); err == nil {
+		usePAMLine = "# UsePAM omitted: Alpine's openssh has no PAM"
+	}
+
 	cfg := filepath.Join(dir, "sshd_config")
 	if err := os.WriteFile(cfg, []byte(fmt.Sprintf(`Port %d
 ListenAddress 127.0.0.1
@@ -97,6 +106,7 @@ HostKey %s
 AuthorizedKeysFile %s
 PasswordAuthentication no
 PubkeyAuthentication yes
+%s
 PidFile %s/sshd.pid
 # prohibit-password (not "no") because the test runs under whatever
 # user invoked it, which is "root" inside CI containers; "no" plus
@@ -107,7 +117,7 @@ PermitRootLogin prohibit-password
 AllowUsers %s
 StrictModes no
 LogLevel ERROR
-`, port, hostKey, ak, dir, me.Username)), 0o600); err != nil {
+`, port, hostKey, ak, usePAMLine, dir, me.Username)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

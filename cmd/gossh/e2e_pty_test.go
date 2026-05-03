@@ -83,7 +83,7 @@ func TestE2EPTYInteractiveShellAndResize(t *testing.T) {
 
 	// Initial size: inject `stty size` via a marker we can grep for.
 	send(t, ptmx, "stty size; echo SZ1-DONE\n")
-	out := waitFor(t, ptmx, regexp.MustCompile(`(?m)^(\d+)\s+(\d+)\s*\r?\nSZ1-DONE`), 5*time.Second, "initial stty size")
+	out := waitFor(t, ptmx, regexp.MustCompile(`(\d+)\s+(\d+)\s*\r?\nSZ1-DONE`), 5*time.Second, "initial stty size")
 	if rows, cols := extractSize(t, out); rows != 24 || cols != 80 {
 		t.Fatalf("initial size wrong: rows=%d cols=%d (want 24 80)\nbuffer=%q", rows, cols, out)
 	}
@@ -103,7 +103,7 @@ func TestE2EPTYInteractiveShellAndResize(t *testing.T) {
 	seenResize := false
 	for time.Now().Before(deadline) {
 		send(t, ptmx, "stty size; echo SZ2-DONE\n")
-		out := waitFor(t, ptmx, regexp.MustCompile(`(?m)^(\d+)\s+(\d+)\s*\r?\nSZ2-DONE`), 2*time.Second, "post-resize stty size")
+		out := waitFor(t, ptmx, regexp.MustCompile(`(\d+)\s+(\d+)\s*\r?\nSZ2-DONE`), 2*time.Second, "post-resize stty size")
 		if rows, cols := extractSize(t, out); rows == 40 && cols == 120 {
 			seenResize = true
 			break
@@ -273,11 +273,20 @@ func waitFor(t *testing.T, r *os.File, pat *regexp.Regexp, d time.Duration, labe
 	return ""
 }
 
-var sizeRe = regexp.MustCompile(`(?m)^(\d+)\s+(\d+)\s*$`)
+// sizeRe matches "rows cols" produced by `stty size`. It deliberately
+// omits the (?m)^…$ anchors that an earlier version used: Fedora's
+// /etc/profile.d/vte.sh installs a PROMPT_COMMAND that wraps every
+// command's output in OSC 3008 escape sequences, which means the
+// `24 80` line ends up preceded by `\x1b\\` (the OSC terminator)
+// rather than `\n`. The pattern is still uniquely identifiable —
+// nothing else in the captured buffer (the OSC payload is full of
+// digits but never has digits-space-digits) looks like it.
+var sizeRe = regexp.MustCompile(`(\d+)\s+(\d+)\s*\r?\n`)
 
 // extractSize pulls the "rows cols" line out of a buffer containing
-// a `stty size` response. It picks the LAST such line, since earlier
-// matches may be the echoed input line under certain termios modes.
+// a `stty size` response. Picks the LAST match — earlier matches
+// could in principle land in shell-decoration output, but the
+// freshest one is the response to the most recent `stty size`.
 func extractSize(t *testing.T, out string) (rows, cols int) {
 	t.Helper()
 	matches := sizeRe.FindAllStringSubmatch(out, -1)
