@@ -152,8 +152,9 @@ func TestProxyCommandEndToEnd(t *testing.T) {
 
 	// ProxyCommand uses %h/%p expansion. The client passes
 	// cfg.Host="127.0.0.1" and cfg.Port=<port>, which get substituted
-	// before sh -c runs. "-q0" tells OpenBSD nc to exit with EOF so
-	// our proxy process doesn't linger.
+	// before sh -c runs. We DON'T use -q0 here because nmap-ncat
+	// (Fedora's default `nc`) doesn't accept it; the linger isn't a
+	// problem because proxyConn.Close kills the child unconditionally.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	c, err := Dial(ctx, Config{
@@ -163,7 +164,7 @@ func TestProxyCommandEndToEnd(t *testing.T) {
 		IdentityFiles:  []string{userPath},
 		KnownHostsPath: kh,
 		HostCheckMode:  knownhosts.Strict,
-		ProxyCommand:   "nc -q0 %h %p",
+		ProxyCommand:   "nc %h %p",
 	})
 	if err != nil {
 		t.Fatalf("dial via ProxyCommand: %v", err)

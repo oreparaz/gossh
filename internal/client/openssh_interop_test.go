@@ -98,7 +98,12 @@ AuthorizedKeysFile %s
 PasswordAuthentication no
 PubkeyAuthentication yes
 PidFile %s/sshd.pid
-PermitRootLogin no
+# prohibit-password (not "no") because the test runs under whatever
+# user invoked it, which is "root" inside CI containers; "no" plus
+# AllowUsers root would refuse the login. We're already pubkey-only
+# via PasswordAuthentication=no above, so this is equivalent on
+# non-root hosts.
+PermitRootLogin prohibit-password
 AllowUsers %s
 StrictModes no
 LogLevel ERROR

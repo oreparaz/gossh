@@ -57,6 +57,13 @@ if [ "$install_go_from_dl" = "1" ]; then
     export PATH
 fi
 
+# OpenSSH's privsep chroot dir. Distro packages typically create this
+# at install time, but minimal containers skip the postinst, so
+# `sshd` errors out with "Missing privilege separation directory:
+# /run/sshd" the moment a test launches an unprivileged sshd. Create
+# it ahead of time so every interop test has it.
+mkdir -p /run/sshd
+
 # Copy source out of the read-only mount so `make build` can write
 # bin/ without contaminating the host workspace.
 mkdir -p "$WORK"

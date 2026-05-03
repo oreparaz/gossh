@@ -46,7 +46,7 @@ type e2eRig struct {
 
 // setupE2E builds both client binaries, starts an in-process gosshd,
 // and writes ssh_config + known_hosts pointing at it. The ssh_config
-// "devbox" alias uses ProxyCommand `nc -q0 %h %p`, so every test
+// "devbox" alias uses ProxyCommand `nc %h %p`, so every test
 // subcase below exercises the proxy-command path.
 func setupE2E(t *testing.T) *e2eRig {
 	t.Helper()
@@ -138,7 +138,7 @@ func setupE2E(t *testing.T) *e2eRig {
     IdentityFile %s
     UserKnownHostsFile %s
     StrictHostKeyChecking yes
-    ProxyCommand nc -q0 %%h %%p
+    ProxyCommand nc %%h %%p
 `, port, idFile, knownHost)
 	if err := os.WriteFile(sshConfig, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
@@ -229,7 +229,7 @@ func TestE2EProxyCommandShellInjectionBlocked(t *testing.T) {
 		"-p", fmt.Sprint(r.port),
 		"-i", r.idFile,
 		"-known-hosts", r.knownHost,
-		"-proxy-command", "nc -q0 %h %p",
+		"-proxy-command", "nc %h %p",
 		"-T",
 		hostileTarget, "echo should-not-run")
 	if exit == 0 {
