@@ -116,7 +116,7 @@ PidFile %s/sshd.pid
 PermitRootLogin prohibit-password
 AllowUsers %s
 StrictModes no
-LogLevel ERROR
+LogLevel DEBUG2
 `, port, hostKey, ak, usePAMLine, dir, me.Username)), 0o600); err != nil {
 		t.Fatal(err)
 	}
