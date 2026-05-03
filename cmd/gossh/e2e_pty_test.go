@@ -16,10 +16,11 @@ package main_test
 // comes back. They skip under -short and when bash isn't available.
 
 import (
-	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"regexp"
@@ -76,22 +77,20 @@ func TestE2EPTYInteractiveShellAndResize(t *testing.T) {
 		_, _ = cmd.Process.Wait()
 	})
 
-	reader := bufio.NewReader(ptmx)
-
 	// The remote shell is bash in interactive mode. It will print a
 	// prompt; wait for anything that looks shell-ish before typing.
-	waitFor(t, reader, regexp.MustCompile(`[\$#]\s*$|\$ $`), 5*time.Second, "initial prompt")
+	waitFor(t, ptmx, regexp.MustCompile(`[\$#]\s*$|\$ $`), 5*time.Second, "initial prompt")
 
 	// Initial size: inject `stty size` via a marker we can grep for.
 	send(t, ptmx, "stty size; echo SZ1-DONE\n")
-	out := waitFor(t, reader, regexp.MustCompile(`(?m)^(\d+)\s+(\d+)\s*\r?\nSZ1-DONE`), 5*time.Second, "initial stty size")
+	out := waitFor(t, ptmx, regexp.MustCompile(`(?m)^(\d+)\s+(\d+)\s*\r?\nSZ1-DONE`), 5*time.Second, "initial stty size")
 	if rows, cols := extractSize(t, out); rows != 24 || cols != 80 {
 		t.Fatalf("initial size wrong: rows=%d cols=%d (want 24 80)\nbuffer=%q", rows, cols, out)
 	}
 
 	// Byte passthrough: round-trip a unique string both directions.
 	send(t, ptmx, "echo PASSTHROUGH-CANARY-ABCXYZ\n")
-	waitFor(t, reader, regexp.MustCompile(`PASSTHROUGH-CANARY-ABCXYZ\r?\n`), 5*time.Second, "echo round-trip")
+	waitFor(t, ptmx, regexp.MustCompile(`PASSTHROUGH-CANARY-ABCXYZ\r?\n`), 5*time.Second, "echo round-trip")
 
 	// Resize → SIGWINCH → window-change forwarded → remote pty
 	// termios updated. Poll `stty size` because the remote's view of
@@ -104,7 +103,7 @@ func TestE2EPTYInteractiveShellAndResize(t *testing.T) {
 	seenResize := false
 	for time.Now().Before(deadline) {
 		send(t, ptmx, "stty size; echo SZ2-DONE\n")
-		out := waitFor(t, reader, regexp.MustCompile(`(?m)^(\d+)\s+(\d+)\s*\r?\nSZ2-DONE`), 2*time.Second, "post-resize stty size")
+		out := waitFor(t, ptmx, regexp.MustCompile(`(?m)^(\d+)\s+(\d+)\s*\r?\nSZ2-DONE`), 2*time.Second, "post-resize stty size")
 		if rows, cols := extractSize(t, out); rows == 40 && cols == 120 {
 			seenResize = true
 			break
@@ -184,8 +183,7 @@ func TestE2EPTYForwardsSIGINTCleanly(t *testing.T) {
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
 	})
-	reader := bufio.NewReader(ptmx)
-	waitFor(t, reader, regexp.MustCompile(`[\$#]\s*$|\$ $`), 5*time.Second, "prompt")
+	waitFor(t, ptmx, regexp.MustCompile(`[\$#]\s*$|\$ $`), 5*time.Second, "prompt")
 
 	// Start an intentionally long-running command.
 	send(t, ptmx, "sleep 300\n")
@@ -202,7 +200,7 @@ func TestE2EPTYForwardsSIGINTCleanly(t *testing.T) {
 	// back fast. If SIGINT didn't propagate, sleep holds the
 	// foreground and our echo line sits unread for 300 seconds.
 	send(t, ptmx, "echo CTRL_C_OK_$$\n")
-	waitFor(t, reader, regexp.MustCompile(`CTRL_C_OK_\d+`), 4*time.Second, "post-SIGINT canary")
+	waitFor(t, ptmx, regexp.MustCompile(`CTRL_C_OK_\d+`), 4*time.Second, "post-SIGINT canary")
 	if elapsed := time.Since(start); elapsed > 3*time.Second {
 		t.Fatalf("SIGINT + canary took %v — remote may not have received SIGINT promptly", elapsed)
 	}
@@ -231,44 +229,47 @@ func send(t *testing.T, w io.Writer, s string) {
 	}
 }
 
-// waitFor reads from r until the buffered output matches pat or the
-// deadline expires. Returns the full accumulated buffer (so callers
-// can extract capture groups from pat directly, or inspect context
-// on failure).
-func waitFor(t *testing.T, r *bufio.Reader, pat *regexp.Regexp, d time.Duration, label string) string {
+// waitFor reads from the PTY master until the buffered output
+// matches pat or the deadline expires. Returns the full accumulated
+// buffer (so callers can extract capture groups directly or inspect
+// context on failure).
+//
+// Implementation note: an earlier version used a fresh goroutine
+// per poll iteration to add timeout semantics on top of bufio.Reader.
+// That had a race — when the 200 ms tick fired while a read was
+// still in flight, the next iteration spawned another goroutine
+// against the SAME bufio.Reader, and -race flagged the concurrent
+// reads. The current version uses *os.File.SetReadDeadline directly,
+// which works on PTYs (they're char devices on the runtime poller),
+// so a single-threaded read loop is enough.
+func waitFor(t *testing.T, r *os.File, pat *regexp.Regexp, d time.Duration, label string) string {
 	t.Helper()
-	deadline := time.Now().Add(d)
-	var buf strings.Builder
-	chunk := make([]byte, 1024)
-	for time.Now().Before(deadline) {
-		// Poll the pty with a small read deadline via a goroutine +
-		// channel — os/exec pty has no SetReadDeadline.
-		type readResult struct {
-			n   int
-			err error
-		}
-		ch := make(chan readResult, 1)
-		go func() {
-			n, err := r.Read(chunk)
-			ch <- readResult{n, err}
-		}()
-		select {
-		case rr := <-ch:
-			if rr.n > 0 {
-				buf.Write(chunk[:rr.n])
-				if pat.MatchString(buf.String()) {
-					return buf.String()
-				}
+	overall := time.Now().Add(d)
+	var acc strings.Builder
+	buf := make([]byte, 1024)
+	defer func() { _ = r.SetReadDeadline(time.Time{}) }()
+	for time.Now().Before(overall) {
+		// Short tick deadline so we re-check the overall deadline
+		// promptly; long enough not to burn syscall overhead.
+		_ = r.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		n, err := r.Read(buf)
+		if n > 0 {
+			acc.Write(buf[:n])
+			if pat.MatchString(acc.String()) {
+				return acc.String()
 			}
-			if rr.err != nil {
-				t.Fatalf("waitFor(%s): read error %v\nbuffer=%q", label, rr.err, buf.String())
-			}
-		case <-time.After(200 * time.Millisecond):
-			// Check deadline at top of loop.
 		}
+		if err == nil {
+			continue
+		}
+		var ne net.Error
+		if errors.As(err, &ne) && ne.Timeout() {
+			continue // deadline tick — go check overall
+		}
+		t.Fatalf("waitFor(%s): read error %v\nbuffer=%q", label, err, acc.String())
 	}
 	t.Fatalf("waitFor(%s) timed out after %v\npattern=%s\nbuffer=%q",
-		label, d, pat, buf.String())
+		label, d, pat, acc.String())
 	return ""
 }
 
