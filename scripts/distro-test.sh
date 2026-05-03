@@ -63,6 +63,11 @@ mkdir -p "$WORK"
 cp -a "$SRC"/. "$WORK"
 cd "$WORK"
 
+# We don't copy the .git dir (and even if we did, runners often
+# can't trust it). Tell `go build` not to embed VCS metadata, or
+# it errors with "error obtaining VCS status" on every binary.
+export GOFLAGS=-buildvcs=false
+
 echo "==> distro: $DISTRO"
 echo "==> go: $(go version)"
 echo "==> running: make test"

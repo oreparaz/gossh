@@ -136,6 +136,11 @@ func (h *testHarness) sshCmd(t *testing.T, extraArgs []string, remoteCmd ...stri
 	t.Helper()
 	sshBin := requireSSHClient(t)
 	base := []string{
+		// Quiet mode silences OpenSSH 10.x's "post-quantum KEX
+		// not negotiated" warning, which otherwise contaminates
+		// CombinedOutput captures used by tests that assert on
+		// remote-command stdout.
+		"-q",
 		"-i", h.UserKeyPath,
 		"-o", "IdentitiesOnly=yes",
 		"-o", "UserKnownHostsFile=" + h.KnownHosts,

@@ -10,6 +10,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +20,27 @@ import (
 	"github.com/oreparaz/gossh/internal/hostkey"
 	"github.com/oreparaz/gossh/internal/knownhosts"
 )
+
+// syncBuffer is a tiny mutex-wrapped bytes.Buffer for capturing
+// subprocess stderr without racing the os/exec stderr-pump goroutine.
+// Reads via String() are safe to call from the test goroutine while
+// the subprocess is still running.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
 
 // TestGosshAgainstOpenSSHSshd spawns an unprivileged OpenSSH sshd and
 // connects gossh to it. If the sshd binary is missing or refuses to
@@ -75,7 +97,6 @@ HostKey %s
 AuthorizedKeysFile %s
 PasswordAuthentication no
 PubkeyAuthentication yes
-UsePAM no
 PidFile %s/sshd.pid
 PermitRootLogin no
 AllowUsers %s
@@ -86,8 +107,12 @@ LogLevel ERROR
 	}
 
 	cmd := exec.Command(sshdBin, "-D", "-e", "-f", cfg)
-	var sshdLog bytes.Buffer
-	cmd.Stderr = &sshdLog
+	// sshdLog is read from a different goroutine than the one os/exec
+	// copies subprocess stderr into; bytes.Buffer isn't safe for that.
+	// Wrap with a mutex so the t.Fatalf path can read the buffer
+	// without racing the live sshd writer goroutine.
+	sshdLog := &syncBuffer{}
+	cmd.Stderr = sshdLog
 	if err := cmd.Start(); err != nil {
 		t.Skipf("failed to start sshd: %v", err)
 	}

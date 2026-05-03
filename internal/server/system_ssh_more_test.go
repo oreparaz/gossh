@@ -35,7 +35,12 @@ func TestSystemSSHEnvAllowlist(t *testing.T) {
 	// ssh -o SendEnv=FOO -o SendEnv=LC_CUSTOM … LANG=en_US.UTF-8 FOO=secret LC_CUSTOM=x ssh …
 	// We set env on the ssh subprocess and SendEnv asks the server to
 	// propagate those names. The server should accept LC_* and drop FOO.
+	// LANG is conventionally listed under SendEnv in /etc/ssh/ssh_config
+	// on Debian/Ubuntu, but Alpine and other minimal distros ship a
+	// stripped default — pass SendEnv=LANG explicitly so the test
+	// doesn't depend on the host's system ssh_config.
 	cmd := h.sshCmd(t, []string{
+		"-o", "SendEnv=LANG",
 		"-o", "SendEnv=FOO",
 		"-o", "SendEnv=LC_CUSTOM",
 	}, "printenv LANG LC_CUSTOM FOO || true; echo ---DONE")
